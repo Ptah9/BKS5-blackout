@@ -8,7 +8,39 @@
   <body>
     <canvas id="view"></canvas>
 
+    <div id="login" class="hidden">
+      <form id="login-form" autocomplete="on">
+        <h1>Поезд встал</h1>
+        <p class="sub">Логин латиницей — из него получится имя в игре</p>
+        <input
+          id="login-name"
+          name="login"
+          placeholder="login"
+          maxlength="16"
+          pattern="[A-Za-z0-9_]{3,16}"
+          autocomplete="username"
+          required
+        />
+        <input
+          id="login-pass"
+          name="password"
+          type="password"
+          placeholder="пароль"
+          minlength="6"
+          maxlength="128"
+          autocomplete="current-password"
+          required
+        />
+        <button id="login-submit" type="submit">Войти</button>
+        <p id="login-error" class="error"></p>
+        <p class="note">Новый логин — новый игрок. Пароль хранится только хешем.</p>
+      </form>
+    </div>
+
+    <div id="hint">Клик — играть · <b>WASD</b> — идти · <b>Shift</b> — бежать · <b>F3</b> — отладка</div>
+
     <div id="status">
+      <div class="row"><span class="k">игрок</span><span class="v" id="s-name">—</span></div>
       <div class="row"><span class="k">сокет</span><span class="v" id="s-conn">—</span></div>
       <div class="row"><span class="k">пинг</span><span class="v" id="s-ping">—</span></div>
       <div class="row"><span class="k">кадры</span><span class="v" id="s-fps">—</span></div>

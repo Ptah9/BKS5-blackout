@@ -1,15 +1,15 @@
 /**
- * Дымовой тест: сервер живой, статика отдаётся, сокет здоровается.
+ * Дымовой тест M2: сервер живой, вход работает, токен проверяется,
+ * мир рассылает позиции, второй игрок виден первому.
  *
  * Запуск: node tools/smoke.mjs   (сервер должен быть уже поднят)
- * Проверяет ровно то, что должен уметь M0, и ничего больше.
  */
 
 import { WebSocket } from 'ws';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // свой же локальный сертификат
 
-const BASE = process.env.BASE ?? 'https://127.0.0.1:8443';
+const BASE = process.env.BASE ?? 'http://127.0.0.1:8080';
 const WS_URL = BASE.replace(/^http/, 'ws') + '/ws';
 
 let failed = 0;
@@ -18,58 +18,125 @@ const check = (name, ok, extra = '') => {
   if (!ok) failed++;
 };
 
+const login = `Test${Date.now() % 100000}`;
+const password = 'secret123';
+
 // 1. статика
 const index = await fetch(BASE + '/');
 const html = await index.text();
 check('GET / — 200', index.status === 200, String(index.status));
 check('в html есть canvas', html.includes('<canvas'));
 
-const assetPath = html.match(/src="([^"]+\.js)"/)?.[1];
-const asset = assetPath ? await fetch(BASE + assetPath) : null;
-check('GET бандла — 200', asset?.status === 200, assetPath ?? 'не найден в html');
+const health = await (await fetch(BASE + '/api/health')).json();
+check('/api/health', health.ok === true);
 
-// 2. сокет: hello → welcome, ping → pong
-const ws = new WebSocket(WS_URL);
-const welcome = await new Promise((resolve) => {
-  const timer = setTimeout(() => resolve(null), 5000);
-  ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', v: 1, token: null })));
-  ws.on('message', (raw) => {
-    const msg = JSON.parse(String(raw));
-    if (msg.t === 'welcome') {
+// 2. регистрация на входе
+const created = await fetch(BASE + '/api/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ login, password }),
+});
+const createdData = await created.json();
+check('первый вход создаёт игрока', created.status === 200 && Boolean(createdData.token), createdData.name);
+
+// 3. неверный пароль
+const wrong = await fetch(BASE + '/api/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ login, password: 'wrong-pass' }),
+});
+check('неверный пароль — 401', wrong.status === 401);
+
+// 4. кривой логин
+const badLogin = await fetch(BASE + '/api/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ login: 'плохой логин', password }),
+});
+check('логин не по правилам — 400', badLogin.status === 400);
+
+// 5. профиль по токену
+const me = await fetch(BASE + '/api/me', { headers: { Authorization: `Bearer ${createdData.token}` } });
+const meData = await me.json();
+check('GET /api/me по токену', me.status === 200 && meData.playerId === createdData.playerId, meData.name);
+
+const meBad = await fetch(BASE + '/api/me', { headers: { Authorization: 'Bearer nonsense' } });
+check('токен-мусор — 401', meBad.status === 401);
+
+// 6. сокет с токеном
+function connect(token) {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(WS_URL);
+    const state = { ws, welcome: null, snapshot: null, players: null };
+    const timer = setTimeout(() => resolve(state), 4000);
+
+    ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', v: 1, token })));
+    ws.on('message', (raw) => {
+      const msg = JSON.parse(String(raw));
+      if (msg.t === 'welcome') state.welcome = msg;
+      if (msg.t === 'snapshot') {
+        state.snapshot = msg;
+        clearTimeout(timer);
+        resolve(state);
+      }
+      if (msg.t === 'players') state.players = msg.list;
+    });
+    ws.on('error', () => {
       clearTimeout(timer);
-      resolve(msg);
-    }
+      resolve(state);
+    });
+  });
+}
+
+const first = await connect(createdData.token);
+check('ws hello с токеном → welcome', first.welcome?.you === createdData.playerId, first.welcome?.name ?? 'нет');
+check('снапшот при входе', Boolean(first.snapshot?.self), first.snapshot ? `x=${first.snapshot.self.x.toFixed(2)}` : 'нет');
+
+// 7. сокет без токена закрывается
+const anonymous = await new Promise((resolve) => {
+  const ws = new WebSocket(WS_URL);
+  const timer = setTimeout(() => resolve({ closed: false }), 4000);
+  ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', v: 1, token: null })));
+  ws.on('close', (code) => {
+    clearTimeout(timer);
+    resolve({ closed: true, code });
   });
   ws.on('error', () => {
     clearTimeout(timer);
-    resolve(null);
+    resolve({ closed: true, code: 0 });
   });
 });
+check('ws без токена закрывается', anonymous.closed === true, `код ${anonymous.code}`);
 
-check('ws hello → welcome', Boolean(welcome), welcome ? `игрок #${welcome.you}` : 'нет ответа');
-
-const pong = await new Promise((resolve) => {
-  const timer = setTimeout(() => resolve(null), 5000);
-  ws.once('message', (raw) => {
-    clearTimeout(timer);
-    resolve(JSON.parse(String(raw)));
-  });
-  ws.send(JSON.stringify({ t: 'ping', id: 1, clientTime: Date.now() }));
+// 8. второй игрок виден первому
+const secondLogin = login + 'b';
+const second = await fetch(BASE + '/api/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ login: secondLogin.slice(0, 16), password }),
 });
+const secondData = await second.json();
+const secondClient = await connect(secondData.token);
 
-check('ws ping → pong', pong?.t === 'pong', pong ? `${Date.now() - pong.clientTime} мс` : 'нет ответа');
+await new Promise((r) => setTimeout(r, 300));
 
-// 3. незнакомое сообщение не должно ронять сервер
-ws.send(JSON.stringify({ t: 'не_существует' }));
-const err = await new Promise((resolve) => {
+const seen = new Promise((resolve) => {
   const timer = setTimeout(() => resolve(null), 2000);
-  ws.once('message', (raw) => {
-    clearTimeout(timer);
-    resolve(JSON.parse(String(raw)));
+  first.ws.on('message', (raw) => {
+    const msg = JSON.parse(String(raw));
+    if (msg.t === 'players' && msg.list.length >= 2) {
+      clearTimeout(timer);
+      resolve(msg.list);
+    }
   });
 });
-check('мусорное сообщение → error, не падение', err?.t === 'error');
 
-ws.terminate();
+first.ws.send(JSON.stringify({ t: 'input', x: 0.5, z: 6.25, yaw: 1.2 }));
+const list = await seen;
+check('двое в мире, позиция первого дошла', Boolean(list), list ? `${list.length} игроков` : 'нет пакета');
+
+first.ws.close();
+secondClient.ws.close();
+
 console.log(failed === 0 ? '\nвсё зелёное' : `\nпровалено: ${failed}`);
 process.exitCode = failed === 0 ? 0 : 1;

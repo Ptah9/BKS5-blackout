@@ -1,89 +1,237 @@
-import * as THREE from 'three';
+﻿import * as THREE from 'three';
 
 import './style.css';
+import { Input } from './core/input';
+import { startLoop } from './core/loop';
+import { RemotePlayers } from './game/remotePlayers';
+import { Player } from './game/player';
+import { Replica } from './net/replica';
 import { Net } from './net/socket';
+import { PostFX } from './render/post';
+import { createEnvironment, createTextures } from './render/textures';
+import { ensureSession, forgetSession } from './ui/login';
+import { buildCar, CAR_HALF_LENGTH, CAR_HALF_WIDTH, CAR_HEIGHT } from './world/car';
+import { buildTunnel } from './world/tunnel';
 
 /**
- * M0: доказать, что всё стоит на ногах — WebGL рисует, сокет отвечает.
- * Вагон, управление и свет приедут на M1, поэтому здесь нарочно пустая комната.
+ * M2: вход по логину с паролем, состояние в базе, другие игроки в вагоне.
+ *
+ * Кадр считается в низком разрешении (640 точек по длинной стороне) и потом
+ * растягивается браузером — так работает и стиль, и производительность.
  */
 
-const canvas = document.getElementById('view') as HTMLCanvasElement;
-const elConn = document.getElementById('s-conn') as HTMLElement;
-const elPing = document.getElementById('s-ping') as HTMLElement;
-const elFps = document.getElementById('s-fps') as HTMLElement;
+const LONG_SIDE = 640;
+const INPUT_INTERVAL = 1 / 20;
 
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.setSize(innerWidth, innerHeight);
-
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x05070a);
-scene.fog = new THREE.FogExp2(0x05070a, 0.055);
-
-const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 120);
-camera.position.set(0, 1.6, 3.2);
-camera.lookAt(0, 1.4, 0);
-
-// заглушка вместо вагона
-const room = new THREE.Mesh(
-  new THREE.BoxGeometry(8, 3, 12),
-  new THREE.MeshStandardMaterial({ color: 0x1b2028, roughness: 0.9, metalness: 0.1, side: THREE.BackSide }),
-);
-room.position.y = 1.5;
-scene.add(room);
-
-const prop = new THREE.Mesh(
-  new THREE.BoxGeometry(0.6, 0.6, 0.6),
-  new THREE.MeshStandardMaterial({ color: 0x9aa4b2, roughness: 0.6, metalness: 0.4 }),
-);
-prop.position.set(0, 1.2, 0);
-scene.add(prop);
-
-const lamp = new THREE.PointLight(0xffd9a0, 12, 18, 2);
-lamp.position.set(0, 2.6, 0);
-scene.add(lamp);
-scene.add(new THREE.AmbientLight(0x30405a, 0.35));
-
-addEventListener('resize', () => {
-  renderer.setSize(innerWidth, innerHeight);
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-});
-
-let frames = 0;
-let fpsAt = performance.now();
-let last = performance.now();
-
-renderer.setAnimationLoop(() => {
-  const now = performance.now();
-  const dt = Math.min((now - last) / 1000, 0.1);
-  last = now;
-
-  prop.rotation.x += dt * 0.4;
-  prop.rotation.y += dt * 0.6;
-
-  renderer.render(scene, camera);
-
-  frames++;
-  if (now - fpsAt >= 500) {
-    elFps.textContent = String(Math.round((frames * 1000) / (now - fpsAt)));
-    frames = 0;
-    fpsAt = now;
+// Отладочная ручка: по ней проверяются движение, позиция и кадры без скриншотов.
+// Клиент и так целиком в браузере, скрывать тут нечего.
+declare global {
+  interface Window {
+    __game?: {
+      player: Player;
+      camera: THREE.PerspectiveCamera;
+      scene: THREE.Scene;
+      renderer: THREE.WebGLRenderer;
+      fps: () => number;
+    };
   }
-});
+}
 
-const net = new Net({
-  onState: (state) => {
-    elConn.textContent = state === 'open' ? 'есть' : state === 'connecting' ? 'подключаюсь…' : 'нет';
-  },
-  onWelcome: (you) => {
-    elConn.textContent = `есть, игрок #${you}`;
-  },
-  onPong: (ms) => {
-    elPing.textContent = `${Math.round(ms)} мс`;
-  },
-});
+async function main(): Promise<void> {
+  // без токена дальше не идём: сервер всё равно закроет сокет
+  const session = await ensureSession();
 
-net.connect();
-setInterval(() => net.ping(), 1000);
+  const canvas = document.getElementById('view') as HTMLCanvasElement;
+  const elConn = document.getElementById('s-conn') as HTMLElement;
+  const elPing = document.getElementById('s-ping') as HTMLElement;
+  const elFps = document.getElementById('s-fps') as HTMLElement;
+  const elName = document.getElementById('s-name') as HTMLElement;
+  const elStatus = document.getElementById('status') as HTMLElement;
+  const elHint = document.getElementById('hint') as HTMLElement;
+
+  elName.textContent = session.name;
+
+  /* ───────────────────────────── рендерер ───────────────────────────── */
+
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: false,
+    powerPreference: 'high-performance',
+  });
+  renderer.setPixelRatio(1);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.BasicShadowMap;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x030406);
+  scene.fog = new THREE.FogExp2(0x030406, 0.075);
+  scene.environment = createEnvironment(renderer);
+  scene.environmentIntensity = 0.25;
+
+  const camera = new THREE.PerspectiveCamera(72, 1, 0.05, 80);
+
+  /* ───────────────────────────── мир ───────────────────────────── */
+
+  const textures = createTextures();
+  const car = buildCar(textures);
+  scene.add(car.group);
+  scene.add(buildTunnel());
+
+  const remotePlayers = new RemotePlayers();
+  scene.add(remotePlayers.group);
+
+  const ambient = new THREE.AmbientLight(0x263247, 0.16);
+  scene.add(ambient);
+
+  const flashlight = new THREE.SpotLight(0xfff4dc, 130, 15, Math.PI / 9, 0.5, 1.5);
+  flashlight.castShadow = true;
+  flashlight.shadow.mapSize.set(512, 512);
+  flashlight.shadow.camera.near = 0.2;
+  flashlight.shadow.camera.far = 13;
+  flashlight.shadow.bias = -0.004;
+  flashlight.position.set(0.06, -0.1, 0);
+
+  const flashlightTarget = new THREE.Object3D();
+  flashlightTarget.position.set(0, -0.15, -1);
+  flashlight.target = flashlightTarget;
+  camera.add(flashlight, flashlightTarget);
+  scene.add(camera);
+
+  const emergency = new THREE.PointLight(0xff2a18, 2.2, 7, 2);
+  emergency.position.set(0, CAR_HEIGHT - 0.2, 0);
+  scene.add(emergency);
+
+  const phoneLights = [0, 1, 2, 3].map(() => {
+    const light = new THREE.PointLight(0x86a8ff, 2.4, 3.8, 2);
+    scene.add(light);
+    return light;
+  });
+
+  const bounds = {
+    minX: -CAR_HALF_WIDTH,
+    maxX: CAR_HALF_WIDTH,
+    minZ: -CAR_HALF_LENGTH,
+    maxZ: CAR_HALF_LENGTH,
+  };
+
+  const player = new Player(camera);
+  const input = new Input(canvas);
+  const replica = new Replica();
+
+  /* ───────────────────────────── картинка ───────────────────────────── */
+
+  function targetSize(): { width: number; height: number } {
+    const w = Math.max(320, innerWidth);
+    const h = Math.max(180, innerHeight);
+    const scale = Math.min(1, LONG_SIDE / Math.max(w, h));
+    return { width: Math.max(320, Math.round(w * scale)), height: Math.max(180, Math.round(h * scale)) };
+  }
+
+  const post = new PostFX(targetSize().width, targetSize().height);
+
+  function resize(): void {
+    const { width, height } = targetSize();
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    post.setSize(width, height);
+  }
+
+  addEventListener('resize', resize);
+  resize();
+
+  /* ───────────────────────────── сеть ───────────────────────────── */
+
+  const net = new Net(session.token, {
+    onState: (state) => {
+      elConn.textContent = state === 'open' ? 'есть' : state === 'connecting' ? 'подключаюсь…' : 'нет';
+    },
+    onWelcome: (you, name) => {
+      elConn.textContent = `есть, как ${name} (#${you})`;
+    },
+    onSnapshot: (self, players) => {
+      player.teleport(self.x, self.z, self.yaw);
+      replica.apply(players, self.id, performance.now());
+    },
+    onPlayers: (list) => {
+      replica.apply(list, session.playerId, performance.now());
+    },
+    onPong: (ms) => {
+      elPing.textContent = `${Math.round(ms)} мс`;
+    },
+    onAuthFailed: () => {
+      // токен протух или отозван: чистим и просим войти заново
+      forgetSession();
+      location.reload();
+    },
+  });
+
+  net.connect();
+  setInterval(() => net.ping(), 1000);
+
+  /* ───────────────────────────── кадр ───────────────────────────── */
+
+  addEventListener('keydown', (e) => {
+    if (e.code === 'F3') elStatus.classList.toggle('hidden');
+  });
+
+  const phones = car.phones;
+
+  function updatePhoneLights(): void {
+    const sorted = [...phones].sort(
+      (a, b) => a.distanceToSquared(player.position) - b.distanceToSquared(player.position),
+    );
+    phoneLights.forEach((light, i) => {
+      const p = sorted[i];
+      if (!p) return;
+      light.position.set(p.x, p.y + 0.03, p.z);
+    });
+  }
+
+  let inputAccumulator = 0;
+  let lastFrame = performance.now();
+
+  const loop = startLoop(
+    (dt) => {
+      player.update(dt, input, car.colliders, bounds);
+
+      inputAccumulator += dt;
+      if (inputAccumulator >= INPUT_INTERVAL) {
+        inputAccumulator = 0;
+        net.sendInput(player.position.x, player.position.z, player.facing);
+      }
+    },
+    (alpha, elapsed) => {
+      const now = performance.now();
+      const frameDt = Math.min((now - lastFrame) / 1000, 0.1);
+      lastFrame = now;
+
+      emergency.intensity = 2.0 + Math.sin(elapsed * 2.3) * 0.5;
+      updatePhoneLights();
+
+      remotePlayers.update(replica.step(frameDt, now));
+
+      elHint.classList.toggle('hidden', input.pointerLocked);
+      post.render(renderer, scene, camera, elapsed);
+      void alpha;
+    },
+  );
+
+  const fpsTimer = setInterval(() => {
+    elFps.textContent = String(Math.round(loop.fps()));
+  }, 500);
+
+  window.__game = { player, camera, scene, renderer, fps: () => loop.fps() };
+
+  addEventListener('beforeunload', () => {
+    loop.stop();
+    clearInterval(fpsTimer);
+    input.dispose();
+    net.close();
+    remotePlayers.dispose();
+    post.dispose();
+    renderer.dispose();
+  });
+}
+
+void main();

@@ -10,6 +10,8 @@
     "build": "vite build --config client/vite.config.ts",
     "start": "node backend/server/index.js",
     "cert": "node tools/make-cert.js",
+    "db:reset": "node tools/db-reset.mjs",
+    "smoke": "node tools/smoke.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
