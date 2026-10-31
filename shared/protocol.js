@@ -22,6 +22,9 @@ export const MSG = Object.freeze({
   INPUT: 'input',
   SNAPSHOT: 'snapshot',
   PLAYERS: 'players',
+  // предметы
+  COMBINE: 'combine',
+  INVENTORY: 'inventory',
 });
 
 /** Коды закрытия WebSocket. 4xxx — наши, прикладные. */

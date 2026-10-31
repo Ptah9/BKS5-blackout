@@ -14,8 +14,9 @@ export type SocketState = 'connecting' | 'open' | 'closed';
 interface Handlers {
   onState?: (state: SocketState) => void;
   onWelcome?: (you: number, name: string) => void;
-  onSnapshot?: (self: PlayerView, players: PlayerView[]) => void;
+  onSnapshot?: (self: PlayerView, players: PlayerView[], inventory: Array<string | null>) => void;
   onPlayers?: (list: PlayerView[]) => void;
+  onInventory?: (slots: Array<string | null>, text: string) => void;
   onPong?: (rttMs: number) => void;
   onAuthFailed?: () => void;
 }
@@ -71,6 +72,12 @@ export class Net {
     this.ws.send(JSON.stringify({ t: MSG.INPUT, x, z, yaw }));
   }
 
+  /** Просим сервер соединить предметы. Решает он, а не клиент. */
+  combine(i: number, j: number): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.COMBINE, i, j }));
+  }
+
   ping(): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({ t: MSG.PING, id: ++this.pingId, clientTime: performance.now() }));
@@ -98,6 +105,14 @@ export class Net {
         this.handlers.onSnapshot?.(
           msg.self as PlayerView,
           (msg.players as PlayerView[]) ?? [],
+          (msg.inventory as Array<string | null>) ?? [],
+        );
+        return;
+
+      case MSG.INVENTORY:
+        this.handlers.onInventory?.(
+          (msg.slots as Array<string | null>) ?? [],
+          String(msg.text ?? ''),
         );
         return;
 

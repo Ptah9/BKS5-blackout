@@ -135,7 +135,46 @@ first.ws.send(JSON.stringify({ t: 'input', x: 0.5, z: 6.25, yaw: 1.2 }));
 const list = await seen;
 check('двое в мире, позиция первого дошла', Boolean(list), list ? `${list.length} игроков` : 'нет пакета');
 
+// 9. рецепты проверяет сервер, а не клиент
+const waitInventory = (send) =>
+  new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), 2000);
+    const onMessage = (raw) => {
+      const msg = JSON.parse(String(raw));
+      if (msg.t !== 'inventory') return;
+      clearTimeout(timer);
+      first.ws.off('message', onMessage);
+      resolve(msg);
+    };
+    first.ws.on('message', onMessage);
+    send();
+  });
+
+const combined = await waitInventory(() => first.ws.send(JSON.stringify({ t: 'combine', i: 0, j: 1 })));
+check(
+  'combine: бутылка + телефон → фонарик',
+  combined?.slots?.[0] === 'flashlight' && combined?.slots?.[1] === null,
+  combined?.text ?? 'нет ответа',
+);
+
+const rejected = await waitInventory(() => first.ws.send(JSON.stringify({ t: 'combine', i: 2, j: 3 })));
+check(
+  'combine: конфеты + бумажка отклонены',
+  rejected?.slots?.[2] === 'candy' && rejected?.slots?.[3] === 'paper',
+  rejected?.text ?? 'нет ответа',
+);
+
+// 10. инвентарь переживает переподключение (значит, он в базе, а не в памяти)
 first.ws.close();
+await new Promise((r) => setTimeout(r, 300));
+const again = await connect(createdData.token);
+check(
+  'инвентарь пришёл из базы после переподключения',
+  again.snapshot?.inventory?.[0] === 'flashlight',
+  again.snapshot ? JSON.stringify(again.snapshot.inventory) : 'нет снапшота',
+);
+again.ws.close();
+
 secondClient.ws.close();
 
 console.log(failed === 0 ? '\nвсё зелёное' : `\nпровалено: ${failed}`);

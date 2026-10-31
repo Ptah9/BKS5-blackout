@@ -19,6 +19,7 @@ import { WebSocketServer } from 'ws';
 
 import { Store } from '../db/store.js';
 import { hashPassword, hashToken, newToken, verifyPassword } from './auth.js';
+import { START_INVENTORY, findRecipe, sanitizeInventory } from '../../shared/items.js';
 import { toRussianName } from '../../shared/translit.js';
 import { AUTH, CLOSE, HELLO_TIMEOUT_MS, MSG, PROTOCOL_VERSION, TICK, WORLD } from '../../shared/protocol.js';
 
@@ -269,6 +270,16 @@ function attachWebSocket(server) {
           clearTimeout(helloTimer);
 
           const saved = store.loadState(player.id);
+          let inventory = [...START_INVENTORY];
+          if (saved?.inventory) {
+            try {
+              const parsed = JSON.parse(saved.inventory);
+              if (Array.isArray(parsed) && parsed.some(Boolean)) inventory = sanitizeInventory(parsed);
+            } catch {
+              // битый json в базе — начинаем со стартового набора, но не падаем
+            }
+          }
+
           client = {
             ws,
             playerId: player.id,
@@ -276,6 +287,7 @@ function attachWebSocket(server) {
             x: saved?.x ?? WORLD.spawnX,
             z: saved?.z ?? WORLD.spawnZ,
             yaw: saved?.yaw ?? 0,
+            inventory,
           };
 
           // одно соединение на игрока: старое закрываем
@@ -297,7 +309,39 @@ function attachWebSocket(server) {
             you: player.id,
             self: { id: player.id, name: player.name, x: client.x, z: client.z, yaw: client.yaw },
             players: [...clients.values()].map(toView),
+            inventory: client.inventory,
           }));
+          return;
+        }
+
+        case MSG.COMBINE: {
+          if (!client) return;
+
+          const i = Number(msg.i);
+          const j = Number(msg.j);
+          if (!Number.isInteger(i) || !Number.isInteger(j) || i === j) return;
+          if (i < 0 || j < 0 || i >= client.inventory.length || j >= client.inventory.length) return;
+
+          const first = client.inventory[i];
+          const second = client.inventory[j];
+
+          if (!first || !second) {
+            sendInventory(ws, client.inventory, 'Пустой слот');
+            return;
+          }
+
+          const recipe = findRecipe(first, second);
+          if (!recipe) {
+            sendInventory(ws, client.inventory, 'Из этого ничего не выходит');
+            return;
+          }
+
+          client.inventory[i] = recipe.result;
+          client.inventory[j] = null;
+          log(`игрок ${client.name}: ${first} + ${second} → ${recipe.result}`);
+
+          store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
+          sendInventory(ws, client.inventory, recipe.text);
           return;
         }
 
@@ -341,7 +385,7 @@ function attachWebSocket(server) {
       clearTimeout(helloTimer);
       if (!client) return;
       if (clients.get(client.playerId) === client) clients.delete(client.playerId);
-      store.saveState(client.playerId, client.x, client.z, client.yaw);
+      store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
       log(`ws: игрок ${client.name} (#${client.playerId}) вышел, код ${code}, ${clients.size} в сети`);
     });
 
@@ -351,6 +395,10 @@ function attachWebSocket(server) {
 
 function toView(client) {
   return { id: client.playerId, name: client.name, x: client.x, z: client.z, yaw: client.yaw };
+}
+
+function sendInventory(ws, slots, text = '') {
+  ws.send(JSON.stringify({ t: MSG.INVENTORY, slots, text }));
 }
 
 /* ───────────────────────────── запуск ───────────────────────────── */
@@ -390,7 +438,7 @@ setInterval(() => {
 // запись состояния в базу: раз в секунду
 setInterval(() => {
   for (const client of clients.values()) {
-    store.saveState(client.playerId, client.x, client.z, client.yaw);
+    store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
   }
 }, TICK.PERSIST_MS);
 
@@ -421,7 +469,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
     log('остановка: сохраняю состояние');
     for (const client of clients.values()) {
-      store.saveState(client.playerId, client.x, client.z, client.yaw);
+      store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
     }
     store.close();
     process.exit(0);

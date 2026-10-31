@@ -5,10 +5,13 @@ import { Input } from './core/input';
 import { startLoop } from './core/loop';
 import { RemotePlayers } from './game/remotePlayers';
 import { Player } from './game/player';
+import { Inventory } from './game/inventory';
+import { Pulse } from './game/pulse';
 import { Replica } from './net/replica';
 import { Net } from './net/socket';
 import { PostFX } from './render/post';
 import { createEnvironment, createTextures } from './render/textures';
+import { Hud } from './ui/hud';
 import { ensureSession, forgetSession } from './ui/login';
 import { buildCar, CAR_HALF_LENGTH, CAR_HALF_WIDTH, CAR_HEIGHT } from './world/car';
 import { buildTunnel } from './world/tunnel';
@@ -118,6 +121,25 @@ async function main(): Promise<void> {
   const input = new Input(canvas);
   const replica = new Replica();
 
+  const inventory = new Inventory();
+  const hud = new Hud(inventory);
+  const pulse = new Pulse();
+
+  hud.say('Темно. В кармане бутылка воды и телефон — экран светит синим.');
+
+  function applyFlashlight(hasLight: boolean): void {
+    flashlight.intensity = hasLight ? 210 : 130;
+    flashlight.angle = hasLight ? Math.PI / 7.5 : Math.PI / 9;
+    ambient.intensity = hasLight ? 0.2 : 0.16;
+  }
+
+  function placeName(): string {
+    const z = player.position.z;
+    if (z > 4) return 'вагон · к тамбуру';
+    if (z < -4) return 'вагон · к кабине';
+    return 'вагон · середина';
+  }
+
   /* ───────────────────────────── картинка ───────────────────────────── */
 
   function targetSize(): { width: number; height: number } {
@@ -149,9 +171,18 @@ async function main(): Promise<void> {
     onWelcome: (you, name) => {
       elConn.textContent = `есть, как ${name} (#${you})`;
     },
-    onSnapshot: (self, players) => {
+    onSnapshot: (self, players, slots) => {
       player.teleport(self.x, self.z, self.yaw);
       replica.apply(players, self.id, performance.now());
+      inventory.apply(slots);
+      hud.renderSlots();
+      applyFlashlight(inventory.has('flashlight'));
+    },
+    onInventory: (slots, text) => {
+      inventory.apply(slots);
+      hud.renderSlots();
+      if (text) hud.say(text);
+      applyFlashlight(inventory.has('flashlight'));
     },
     onPlayers: (list) => {
       replica.apply(list, session.playerId, performance.now());
@@ -171,8 +202,27 @@ async function main(): Promise<void> {
 
   /* ───────────────────────────── кадр ───────────────────────────── */
 
-  addEventListener('keydown', (e) => {
-    if (e.code === 'F3') elStatus.classList.toggle('hidden');
+  addEventListener('keydown', (event) => {
+    if (event.code === 'F3') {
+      elStatus.classList.toggle('hidden');
+      return;
+    }
+
+    if (/^Digit[1-6]$/.test(event.code)) {
+      inventory.toggle(Number(event.code.slice(5)) - 1);
+      hud.renderSlots();
+      return;
+    }
+
+    if (event.code === 'KeyC') {
+      const pair = inventory.pair;
+      if (!pair) {
+        hud.say('Выбери два предмета: цифры 1–6');
+        return;
+      }
+      // решает сервер: он сверяет рецепт и присылает новое состояние слотов
+      net.combine(pair[0], pair[1]);
+    }
   });
 
   const phones = car.phones;
@@ -189,11 +239,18 @@ async function main(): Promise<void> {
   }
 
   let inputAccumulator = 0;
+  let hudAccumulator = 0;
   let lastFrame = performance.now();
 
   const loop = startLoop(
     (dt) => {
       player.update(dt, input, car.colliders, bounds);
+
+      pulse.update(dt, {
+        lightOn: inventory.has('flashlight'),
+        moving: player.speed > 0.35,
+        scared: false,
+      });
 
       inputAccumulator += dt;
       if (inputAccumulator >= INPUT_INTERVAL) {
@@ -210,6 +267,14 @@ async function main(): Promise<void> {
       updatePhoneLights();
 
       remotePlayers.update(replica.step(frameDt, now));
+
+      hud.tick(frameDt);
+      hudAccumulator += frameDt;
+      if (hudAccumulator >= 0.25) {
+        hudAccumulator = 0;
+        hud.setPulse(pulse.bpm, pulse.level);
+        hud.setPlace(placeName());
+      }
 
       elHint.classList.toggle('hidden', input.pointerLocked);
       post.render(renderer, scene, camera, elapsed);

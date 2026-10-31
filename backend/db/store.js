@@ -34,6 +34,7 @@ const SCHEMA = `
     x          REAL NOT NULL,
     z          REAL NOT NULL,
     yaw        REAL NOT NULL,
+    inventory  TEXT NOT NULL DEFAULT '[]',
     updated_at INTEGER NOT NULL
   );
 
@@ -50,6 +51,7 @@ export class Store {
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec(SCHEMA);
+    this.migrate();
 
     this.q = {
       playerByLogin: this.db.prepare('SELECT * FROM players WHERE login = ?'),
@@ -63,13 +65,24 @@ export class Store {
       session: this.db.prepare('SELECT * FROM sessions WHERE token_hash = ?'),
       dropSession: this.db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
       dropExpired: this.db.prepare('DELETE FROM sessions WHERE expires_at < ?'),
-      loadState: this.db.prepare('SELECT x, z, yaw FROM state WHERE player_id = ?'),
+      loadState: this.db.prepare('SELECT x, z, yaw, inventory FROM state WHERE player_id = ?'),
       saveState: this.db.prepare(
-        `INSERT INTO state (player_id, x, z, yaw, updated_at) VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO state (player_id, x, z, yaw, inventory, updated_at) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(player_id) DO UPDATE SET x = excluded.x, z = excluded.z,
-           yaw = excluded.yaw, updated_at = excluded.updated_at`,
+           yaw = excluded.yaw, inventory = excluded.inventory, updated_at = excluded.updated_at`,
       ),
     };
+  }
+
+  /**
+   * Догоняющая миграция: база с прошлой вехи уже существует, и пересоздавать
+   * её на демо нельзя — там прогресс игроков. Добавляем недостающие колонки.
+   */
+  migrate() {
+    const columns = this.db.prepare('PRAGMA table_info(state)').all().map((c) => c.name);
+    if (!columns.includes('inventory')) {
+      this.db.exec("ALTER TABLE state ADD COLUMN inventory TEXT NOT NULL DEFAULT '[]'");
+    }
   }
 
   playerByLogin(login) {
@@ -102,8 +115,8 @@ export class Store {
     return this.q.loadState.get(playerId) ?? null;
   }
 
-  saveState(playerId, x, z, yaw) {
-    this.q.saveState.run(playerId, x, z, yaw, Date.now());
+  saveState(playerId, x, z, yaw, inventory) {
+    this.q.saveState.run(playerId, x, z, yaw, JSON.stringify(inventory ?? []), Date.now());
   }
 
   close() {
