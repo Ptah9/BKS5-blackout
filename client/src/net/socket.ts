@@ -1,54 +1,96 @@
-import { MSG, PROTOCOL_VERSION } from '../../../shared/protocol.js';
+/**
+ * WebSocket на клиенте: рукопожатие с токеном, ввод 20 Гц, дельты мира.
+ *
+ * Адрес не настраивается: страница пришла с сервера, сокет идёт туда же.
+ * Токен не даёт открыть мир: без него сервер закрывает соединение кодом 4403,
+ * и клиент возвращается на экран входа, а не «висит в ошибке».
+ */
+
+import { CLOSE, MSG, PROTOCOL_VERSION } from '../../../shared/protocol.js';
+import type { PlayerView } from './types';
 
 export type SocketState = 'connecting' | 'open' | 'closed';
 
 interface Handlers {
   onState?: (state: SocketState) => void;
-  onWelcome?: (you: number) => void;
+  onWelcome?: (you: number, name: string) => void;
+  onSnapshot?: (self: PlayerView, players: PlayerView[], inventory: Array<string | null>) => void;
+  onPlayers?: (list: PlayerView[]) => void;
+  onInventory?: (slots: Array<string | null>, text: string) => void;
+  onEvent?: (kind: string, data: Record<string, unknown>) => void;
+  onNpcs?: (list: Array<{ id: string; name: string; pos: number[]; yaw: number }>) => void;
+  onNpcReply?: (id: string, delta: string, done: boolean) => void;
   onPong?: (rttMs: number) => void;
+  onAuthFailed?: () => void;
 }
 
-/**
- * Один WebSocket на клиента. Адрес не настраивается: страница пришла с сервера,
- * значит и сокет идёт на тот же origin. Одна сборка работает на любой машине.
- *
- * M0: рукопожатие и пинг. Реконнект простой (backoff 0.5 → 8 с), токен появится на M2.
- */
 export class Net {
   private ws: WebSocket | null = null;
   private retry = 500;
-  private token: string | null = null;
   private pingId = 0;
+  private stopped = false;
   private readonly url: string;
 
-  constructor(private readonly h: Handlers = {}) {
+  constructor(
+    private readonly token: string,
+    private readonly handlers: Handlers = {},
+  ) {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     this.url = `${proto}://${location.host}/ws`;
   }
 
-  connect(token: string | null = null): void {
-    this.token = token;
-    this.h.onState?.('connecting');
+  connect(): void {
+    if (this.stopped) return;
+    this.handlers.onState?.('connecting');
 
     const ws = new WebSocket(this.url);
     this.ws = ws;
 
     ws.addEventListener('open', () => {
       this.retry = 500;
-      this.h.onState?.('open');
-      ws.send(JSON.stringify({ t: MSG.HELLO, v: PROTOCOL_VERSION, token }));
+      this.handlers.onState?.('open');
+      ws.send(JSON.stringify({ t: MSG.HELLO, v: PROTOCOL_VERSION, token: this.token }));
     });
 
-    ws.addEventListener('message', (ev) => this.handle(String(ev.data)));
+    ws.addEventListener('message', (event) => this.handle(String(event.data)));
 
-    ws.addEventListener('close', () => {
-      this.h.onState?.('closed');
+    ws.addEventListener('close', (event) => {
+      this.handlers.onState?.('closed');
+      if (event.code === CLOSE.FORBIDDEN) {
+        // токен не принят — переподключение бессмысленно, нужен новый вход
+        this.stopped = true;
+        this.handlers.onAuthFailed?.();
+        return;
+      }
       const wait = this.retry;
       this.retry = Math.min(this.retry * 2, 8000);
-      setTimeout(() => this.connect(this.token), wait);
+      setTimeout(() => this.connect(), wait);
     });
 
     ws.addEventListener('error', () => ws.close());
+  }
+
+  sendInput(x: number, z: number, yaw: number): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.INPUT, x, z, yaw }));
+  }
+
+  /** Просим сервер соединить предметы. Решает он, а не клиент. */
+  combine(i: number, j: number): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.COMBINE, i, j }));
+  }
+
+  /** Сообщаем серверу, что игрок вошёл в другую часть мира. */
+  sendZone(chunk: string): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.ZONE, chunk }));
+  }
+
+  /** Сказать персонажу. Ответ придёт потоком через onNpcReply. */
+  say(npcId: string, text: string): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.SAY, to: npcId, text }));
   }
 
   ping(): void {
@@ -56,15 +98,64 @@ export class Net {
     this.ws.send(JSON.stringify({ t: MSG.PING, id: ++this.pingId, clientTime: performance.now() }));
   }
 
+  close(): void {
+    this.stopped = true;
+    this.ws?.close();
+  }
+
   private handle(raw: string): void {
-    let msg: { t?: string; you?: number; clientTime?: number };
+    let msg: Record<string, unknown>;
     try {
-      msg = JSON.parse(raw);
+      msg = JSON.parse(raw) as Record<string, unknown>;
     } catch {
       return;
     }
 
-    if (msg.t === MSG.WELCOME) this.h.onWelcome?.(msg.you ?? 0);
-    else if (msg.t === MSG.PONG) this.h.onPong?.(performance.now() - (msg.clientTime ?? 0));
+    switch (msg.t) {
+      case MSG.WELCOME:
+        this.handlers.onWelcome?.(Number(msg.you), String(msg.name));
+        return;
+
+      case MSG.SNAPSHOT:
+        this.handlers.onSnapshot?.(
+          msg.self as PlayerView,
+          (msg.players as PlayerView[]) ?? [],
+          (msg.inventory as Array<string | null>) ?? [],
+        );
+        this.handlers.onNpcs?.(
+          (msg.npcs as Array<{ id: string; name: string; pos: number[]; yaw: number }>) ?? [],
+        );
+        return;
+
+      case MSG.NPC_REPLY:
+        this.handlers.onNpcReply?.(
+          String(msg.id ?? ''),
+          String(msg.delta ?? ''),
+          Boolean(msg.done),
+        );
+        return;
+
+      case MSG.INVENTORY:
+        this.handlers.onInventory?.(
+          (msg.slots as Array<string | null>) ?? [],
+          String(msg.text ?? ''),
+        );
+        return;
+
+      case MSG.EVENT:
+        this.handlers.onEvent?.(String(msg.kind ?? ''), (msg.data as Record<string, unknown>) ?? {});
+        return;
+
+      case MSG.PLAYERS:
+        this.handlers.onPlayers?.((msg.list as PlayerView[]) ?? []);
+        return;
+
+      case MSG.PONG:
+        this.handlers.onPong?.(performance.now() - Number(msg.clientTime ?? 0));
+        return;
+
+      default:
+        return;
+    }
   }
 }

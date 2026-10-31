@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   color-scheme: dark;
   --ink: #cfd6e0;
   --dim: #6d7887;
@@ -13,7 +13,7 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: #05070a;
+  background: #030406;
   color: var(--ink);
   font: 13px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
@@ -22,18 +22,25 @@ body {
   display: block;
   width: 100%;
   height: 100%;
+  /* низкое разрешение буфера растягиваем без сглаживания — это и есть PS1-вид */
+  image-rendering: pixelated;
+  cursor: crosshair;
 }
 
 #status {
   position: fixed;
   left: 16px;
-  bottom: 16px;
+  top: 16px;
   padding: 8px 12px;
   border-radius: 6px;
   background: rgb(8 11 16 / 0.72);
   border: 1px solid rgb(120 140 170 / 0.18);
-  backdrop-filter: blur(4px);
   pointer-events: none;
+}
+
+#status.hidden,
+#hint.hidden {
+  display: none;
 }
 
 #status .row {
@@ -46,6 +53,278 @@ body {
   color: var(--dim);
 }
 
-#status .v {
+#hint {
+  position: fixed;
+  left: 50%;
+  bottom: 92px;
+  transform: translateX(-50%);
+  padding: 10px 16px;
+  border-radius: 6px;
+  background: rgb(8 11 16 / 0.82);
+  border: 1px solid rgb(120 140 170 / 0.22);
   color: var(--ink);
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  max-width: min(760px, 92vw);
+  text-align: center;
+}
+
+#hint b {
+  color: #e9eef6;
+}
+
+/* ── HUD: пульс, место, мысли, инвентарь ─────────────────── */
+
+#talk,
+#subtitles,
+#chat {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  border-radius: 6px;
+  border: 1px solid rgb(120 140 170 / 0.22);
+  background: rgb(8 11 16 / 0.82);
+}
+
+#talk {
+  bottom: 206px;
+  padding: 6px 12px;
+  color: #e9eef6;
+  pointer-events: none;
+}
+
+#subtitles {
+  bottom: 250px;
+  max-width: min(760px, 90vw);
+  padding: 8px 14px;
+  color: #dfe6ef;
+  pointer-events: none;
+}
+
+#chat {
+  bottom: 132px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  background: rgb(8 11 16 / 0.92);
+}
+
+#chat-name {
+  color: #9fb7d4;
+  white-space: nowrap;
+}
+
+#chat input {
+  width: min(420px, 60vw);
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 1px solid rgb(120 140 170 / 0.3);
+  background: #05080c;
+  color: var(--ink);
+  font: inherit;
+}
+
+#talk.hidden,
+#subtitles.hidden,
+#chat.hidden {
+  display: none;
+}
+
+#objective {
+  position: fixed;
+  left: 50%;
+  top: 24px;
+  transform: translateX(-50%);
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: rgb(8 11 16 / 0.78);
+  border: 1px solid rgb(120 140 170 / 0.22);
+  color: #e9eef6;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  max-width: min(680px, 90vw);
+  text-align: center;
+}
+
+#objective.hidden {
+  display: none;
+}
+
+#vitals {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgb(8 11 16 / 0.72);
+  border: 1px solid rgb(120 140 170 / 0.18);
+  pointer-events: none;
+  min-width: 156px;
+}
+
+#vitals .v-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#vitals .v-k {
+  color: var(--dim);
+}
+
+#vitals #v-bpm {
+  color: #9fe3a0;
+}
+
+#vitals #v-bpm.mid {
+  color: #f0c674;
+}
+
+#vitals #v-bpm.high {
+  color: #ff7a5f;
+}
+
+#thought {
+  position: fixed;
+  left: 50%;
+  bottom: 152px;
+  transform: translateX(-50%);
+  max-width: min(720px, 86vw);
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: rgb(8 11 16 / 0.78);
+  border: 1px solid rgb(120 140 170 / 0.2);
+  color: #dfe6ef;
+  font-style: italic;
+  text-align: center;
+  pointer-events: none;
+}
+
+#thought.hidden {
+  display: none;
+}
+
+#inv {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
+
+#inv .slot {
+  position: relative;
+  width: 54px;
+  height: 54px;
+  border-radius: 6px;
+  border: 1px solid rgb(120 140 170 / 0.25);
+  background: rgb(8 11 16 / 0.7);
+  color: var(--dim);
+  font: inherit;
+  font-size: 11px;
+  display: grid;
+  place-items: center;
+}
+
+#inv .slot.filled {
+  color: var(--ink);
+  border-color: rgb(150 175 210 / 0.45);
+}
+
+#inv .slot.selected {
+  border-color: #4d88c7;
+  box-shadow: inset 0 0 0 1px #4d88c7;
+  color: #fff;
+}
+
+#inv .slot::before {
+  content: attr(data-key);
+  position: absolute;
+  left: 4px;
+  top: 2px;
+  font-size: 9px;
+  color: rgb(150 165 185 / 0.7);
+}
+
+/* ── экран входа ─────────────────────────────────────────── */
+
+#login {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at 50% 38%, #0d1319, #030406 72%);
+  z-index: 10;
+}
+
+#login.hidden {
+  display: none;
+}
+
+#login form {
+  width: min(360px, 90vw);
+  display: grid;
+  gap: 10px;
+  padding: 26px 24px;
+  border-radius: 10px;
+  background: rgb(10 14 19 / 0.92);
+  border: 1px solid rgb(120 140 170 / 0.22);
+}
+
+#login h1 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0.04em;
+}
+
+#login .sub {
+  margin: 0 0 6px;
+  color: var(--dim);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+#login input {
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid rgb(120 140 170 / 0.28);
+  background: #05080c;
+  color: var(--ink);
+  font: inherit;
+}
+
+#login input:focus {
+  outline: 2px solid #3b6ea8;
+  outline-offset: 1px;
+}
+
+#login button {
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid #3b6ea8;
+  background: #16334f;
+  color: #e9f0fa;
+  font: inherit;
+  cursor: pointer;
+}
+
+#login button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+#login .error {
+  margin: 0;
+  min-height: 16px;
+  color: #ff8b7a;
+  font-size: 12px;
+}
+
+#login .note {
+  margin: 0;
+  color: var(--dim);
+  font-size: 11px;
 }

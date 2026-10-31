@@ -8,10 +8,64 @@
   <body>
     <canvas id="view"></canvas>
 
+    <div id="login" class="hidden">
+      <form id="login-form" autocomplete="on">
+        <h1>Поезд встал</h1>
+        <p class="sub">Логин латиницей — из него получится имя в игре</p>
+        <input
+          id="login-name"
+          name="login"
+          placeholder="login"
+          maxlength="16"
+          pattern="[A-Za-z0-9_]{3,16}"
+          autocomplete="username"
+          required
+        />
+        <input
+          id="login-pass"
+          name="password"
+          type="password"
+          placeholder="пароль"
+          minlength="6"
+          maxlength="128"
+          autocomplete="current-password"
+          required
+        />
+        <button id="login-submit" type="submit">Войти</button>
+        <p id="login-error" class="error"></p>
+        <p class="note">Новый логин — новый игрок. Пароль хранится только хешем.</p>
+      </form>
+    </div>
+
+    <div id="hint">Клик — играть · <b>WASD</b> — идти · <b>Shift</b> — бежать · <b>1–6</b> — предмет · <b>C</b> — соединить · <b>F3</b> — отладка</div>
+
+    <div id="vitals">
+      <div class="v-row"><span class="v-k">пульс</span><span class="v-v" id="v-bpm">—</span></div>
+      <div class="v-row"><span class="v-k">место</span><span class="v-v" id="v-place">—</span></div>
+    </div>
+
+    <div id="thought" class="hidden"></div>
+
+    <div id="objective" class="hidden"></div>
+
+    <div id="inv"></div>
+
     <div id="status">
+      <div class="row"><span class="k">игрок</span><span class="v" id="s-name">—</span></div>
       <div class="row"><span class="k">сокет</span><span class="v" id="s-conn">—</span></div>
       <div class="row"><span class="k">пинг</span><span class="v" id="s-ping">—</span></div>
       <div class="row"><span class="k">кадры</span><span class="v" id="s-fps">—</span></div>
+      <div class="row"><span class="k">чанки</span><span class="v" id="s-chunks">—</span></div>
+      <div class="row"><span class="k">память</span><span class="v" id="s-mem">—</span></div>
+    </div>
+
+    <div id="talk" class="hidden"></div>
+
+    <div id="subtitles" class="hidden"></div>
+
+    <div id="chat" class="hidden">
+      <span id="chat-name"></span>
+      <input id="chat-input" maxlength="300" placeholder="сказать…" autocomplete="off" />
     </div>
 
     <script type="module" src="/src/main.ts"></script>

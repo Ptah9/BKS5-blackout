@@ -1,31 +1,90 @@
 /**
- * Сервер игры: отдаёт собранный клиент и держит WebSocket.
+ * Сервер игры: статика клиента, HTTP-API входа и WebSocket-мир.
  *
- * M0 — только каркас: статика, рукопожатие, пинг. Авторизация, состояние
- * и сценарий приезжают на следующих вехах, но структура уже здесь.
+ * M2: логин с паролем, токен сессии, состояние в SQLite, снапшот при входе
+ * и дельты позиций 20 раз в секунду.
  *
  * Запуск:
  *   node backend/server/index.js          — https://<ip>:8443 (если есть сертификат)
  *   node backend/server/index.js --dev    — http://127.0.0.1:8080 (для Vite dev-сервера)
  */
 
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
-import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
+import { networkInterfaces } from 'node:os';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { networkInterfaces } from 'node:os';
 import { WebSocketServer } from 'ws';
 
-import { CLOSE, HELLO_TIMEOUT_MS, MSG, PROTOCOL_VERSION } from '../../shared/protocol.js';
+import { Store } from '../db/store.js';
+import { hashPassword, hashToken, newToken, verifyPassword } from './auth.js';
+import { AgentRuntime } from './agent.js';
+import { Scenario } from './scenario.js';
+import { START_INVENTORY, findRecipe, sanitizeInventory } from '../../shared/items.js';
+import { toRussianName } from '../../shared/translit.js';
+import { AUTH, CLOSE, HELLO_TIMEOUT_MS, MSG, PROTOCOL_VERSION, TICK, WORLD } from '../../shared/protocol.js';
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '../..');
 const DIST = join(ROOT, 'dist');
 const CERTS = join(ROOT, 'certs');
+const DB_FILE = join(ROOT, 'data', 'game.db');
 
 const DEV = process.argv.includes('--dev');
-const DEV_PORT = 8080;
+// 8080 на этой машине занят отладочным сервером браузера, поэтому dev — на 8090
+const DEV_PORT = 8090;
 const PORT = DEV ? DEV_PORT : 8443;
+
+const log = (...args) => console.log(`[${new Date().toLocaleTimeString('ru-RU')}]`, ...args);
+
+/**
+ * Читаем .env без зависимостей. Файл в .gitignore: ключи в историю не попадают.
+ * Уже выставленные переменные окружения не перетираем.
+ */
+function loadDotEnv(file) {
+  if (!existsSync(file)) return;
+  const text = readFileSync(file, 'utf8');
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq < 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+    if (key && !(key in process.env)) process.env[key] = value;
+  }
+}
+
+loadDotEnv(join(ROOT, '.env'));
+
+/* ───────────────────────────── база ───────────────────────────── */
+
+const store = new Store(DB_FILE);
+log('база:', DB_FILE);
+
+// Персонажи и их характеры — в данных, а не в коде сервера.
+const npcs = JSON.parse(readFileSync(join(ROOT, 'content', 'npcs.json'), 'utf8')).npcs;
+const agents = new AgentRuntime({
+  store,
+  key: process.env.DEEPSEEK_API_KEY ?? null,
+  log,
+});
+log('агенты:', agents.mode === 'deepseek' ? 'DeepSeek по API' : 'правила (ключа нет)');
+
+// Сценарий читается один раз на старте. Флаги мира живут в базе,
+// поэтому перезапуск сервера не откатывает «найден фонарь» и подобное.
+const scenario = Scenario.load(join(ROOT, 'content', 'scenario', 'metro_tunnel.json'), {
+  store,
+  log,
+  broadcast(event) {
+    const payload = JSON.stringify({ t: MSG.EVENT, kind: event.kind, data: event.data });
+    for (const client of clients.values()) {
+      if (client.ws.readyState === client.ws.OPEN) client.ws.send(payload);
+    }
+  },
+});
+
+/* ───────────────────────────── HTTP ───────────────────────────── */
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -36,28 +95,100 @@ const MIME = {
   '.map': 'application/json; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
   '.wasm': 'application/wasm',
-  '.glb': 'model/gltf-binary',
   '.mp3': 'audio/mpeg',
   '.ogg': 'audio/ogg',
   '.wav': 'audio/wav',
 };
 
-const log = (...args) => console.log(`[${new Date().toLocaleTimeString('ru-RU')}]`, ...args);
-
-/* ───────────────────────────── статика ───────────────────────────── */
-
-function send(res, status, body, headers = {}) {
-  res.writeHead(status, { 'Cache-Control': 'no-store', ...headers });
-  res.end(body);
+function json(res, status, body) {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(payload),
+    'Cache-Control': 'no-store',
+  });
+  res.end(payload);
 }
 
-function notFound(res) {
-  send(res, 404, 'not found', { 'Content-Type': 'text/plain; charset=utf-8' });
+async function readJson(req, limit = 4096) {
+  const chunks = [];
+  let size = 0;
+
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) throw new Error('too_large');
+    chunks.push(chunk);
+  }
+
+  const text = Buffer.concat(chunks).toString('utf8');
+  if (!text) return {};
+  return JSON.parse(text);
+}
+
+function bearer(req) {
+  const header = req.headers.authorization ?? '';
+  return header.startsWith('Bearer ') ? header.slice(7) : null;
+}
+
+async function handleLogin(req, res) {
+  let body;
+  try {
+    body = await readJson(req);
+  } catch {
+    return json(res, 400, { error: { code: 'bad_json', message: 'ожидался JSON' } });
+  }
+
+  const login = String(body.login ?? '').trim();
+  const password = String(body.password ?? '');
+
+  if (!AUTH.LOGIN_RE.test(login)) {
+    return json(res, 400, {
+      error: { code: 'bad_login', message: 'логин: латиница, цифры и _, от 3 до 16 символов' },
+    });
+  }
+  if (password.length < AUTH.PASSWORD_MIN || password.length > AUTH.PASSWORD_MAX) {
+    return json(res, 400, {
+      error: { code: 'bad_password', message: `пароль от ${AUTH.PASSWORD_MIN} до ${AUTH.PASSWORD_MAX} символов` },
+    });
+  }
+
+  let player = store.playerByLogin(login);
+
+  if (player) {
+    const ok = await verifyPassword(password, player.pass_salt, player.pass_hash);
+    if (!ok) {
+      log('вход: неверный пароль для', login);
+      return json(res, 401, { error: { code: 'bad_credentials', message: 'неверный пароль' } });
+    }
+  } else {
+    const { hash, salt } = await hashPassword(password);
+    player = store.createPlayer(login, toRussianName(login), hash, salt);
+    log('вход: создан игрок', login, '→', player.name);
+  }
+
+  const token = newToken();
+  store.createSession(hashToken(token), player.id, Date.now() + AUTH.SESSION_HOURS * 3600_000);
+
+  return json(res, 200, { token, playerId: player.id, name: player.name });
+}
+
+function handleMe(req, res) {
+  const token = bearer(req);
+  if (!token) return json(res, 401, { error: { code: 'bad_token', message: 'нет токена' } });
+
+  const session = store.session(hashToken(token));
+  if (!session || session.expires_at < Date.now()) {
+    return json(res, 401, { error: { code: 'bad_token', message: 'сессия истекла' } });
+  }
+
+  const player = store.playerById(session.player_id);
+  if (!player) return json(res, 401, { error: { code: 'bad_token', message: 'игрок не найден' } });
+
+  return json(res, 200, { playerId: player.id, name: player.name, login: player.login });
 }
 
 function serveStatic(req, res) {
@@ -74,13 +205,17 @@ function serveStatic(req, res) {
   if (!target.startsWith(DIST + sep)) return notFound(res); // выход за пределы dist
 
   if (!existsSync(target) || !statSync(target).isFile()) {
-    // SPA-фолбэк: всё, что не файл и не /api, отдаём как index.html
     if (!pathname.startsWith('/api/') && existsSync(join(DIST, 'index.html'))) {
       return sendFile(res, join(DIST, 'index.html'));
     }
     return notFound(res);
   }
   return sendFile(res, target);
+}
+
+function notFound(res) {
+  res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('not found');
 }
 
 function sendFile(res, file) {
@@ -91,27 +226,65 @@ function sendFile(res, file) {
   createReadStream(file).pipe(res);
 }
 
-/* ───────────────────────────── WebSocket ──────────────────────────── */
+async function handleHttp(req, res) {
+  const url = new URL(req.url, 'http://localhost');
 
-let nextPlayerId = 1;
+  if (req.method === 'POST' && url.pathname === '/api/login') return handleLogin(req, res);
+  if (req.method === 'GET' && url.pathname === '/api/me') return handleMe(req, res);
+  if (req.method === 'GET' && url.pathname === '/api/health') {
+    return json(res, 200, { ok: true, players: clients.size, uptime: Math.round(process.uptime()) });
+  }
+  if (url.pathname.startsWith('/api/')) {
+    return json(res, 404, { error: { code: 'not_found', message: url.pathname } });
+  }
+
+  return serveStatic(req, res);
+}
+
+/* ───────────────────────────── мир ───────────────────────────── */
+
+/** Подключённые клиенты: id игрока → запись. */
+const clients = new Map();
+
+function clamp(value, lo, hi) {
+  return value < lo ? lo : value > hi ? hi : value;
+}
+
+function inWorld(x, z) {
+  return {
+    x: clamp(x, WORLD.minX + 0.25, WORLD.maxX - 0.25),
+    z: clamp(z, WORLD.minZ + 0.3, WORLD.maxZ - 0.3),
+  };
+}
 
 function attachWebSocket(server) {
   const wss = new WebSocketServer({ server, path: '/ws' });
 
   wss.on('connection', (ws, req) => {
     const ip = req.socket.remoteAddress;
-    let playerId = null;
-
-    log('ws: соединение с', ip);
+    let client = null;
+    let messageCount = 0;
+    let windowStart = Date.now();
 
     const helloTimer = setTimeout(() => {
-      if (playerId === null) {
-        log('ws: нет hello за', HELLO_TIMEOUT_MS, 'мс — закрываю', ip);
+      if (!client) {
         ws.close(CLOSE.UNAUTHORIZED, 'hello timeout');
       }
     }, HELLO_TIMEOUT_MS);
 
     ws.on('message', (raw) => {
+      // простая защита от флуда: больше 80 сообщений в секунду — закрываем
+      const now = Date.now();
+      if (now - windowStart > 1000) {
+        windowStart = now;
+        messageCount = 0;
+      }
+      if (++messageCount > 80) {
+        log('ws: флуд от игрока', client?.playerId ?? '—');
+        ws.close(CLOSE.RATE_LIMITED, 'rate limited');
+        return;
+      }
+
       let msg;
       try {
         msg = JSON.parse(raw.toString());
@@ -123,20 +296,152 @@ function attachWebSocket(server) {
       switch (msg?.t) {
         case MSG.HELLO: {
           if (msg.v !== PROTOCOL_VERSION) {
-            log('ws: версия протокола', msg.v, '≠', PROTOCOL_VERSION);
             ws.close(CLOSE.BAD_VERSION, 'protocol version mismatch');
             return;
           }
-          // Авторизация появится на M2. Пока пускаем всех, но говорим вслух.
-          playerId = nextPlayerId++;
+
+          const session = typeof msg.token === 'string' ? store.session(hashToken(msg.token)) : null;
+          if (!session || session.expires_at < Date.now()) {
+            log('ws: отказ, токен не принят', ip);
+            ws.close(CLOSE.FORBIDDEN, 'bad token');
+            return;
+          }
+
+          const player = store.playerById(session.player_id);
+          if (!player) {
+            ws.close(CLOSE.FORBIDDEN, 'no player');
+            return;
+          }
+
           clearTimeout(helloTimer);
-          log('ws: игрок', playerId, 'вошёл', msg.token ? '(с токеном)' : '(без токена — auth ещё не подключён)');
+
+          const saved = store.loadState(player.id);
+          let inventory = [...START_INVENTORY];
+          if (saved?.inventory) {
+            try {
+              const parsed = JSON.parse(saved.inventory);
+              if (Array.isArray(parsed) && parsed.some(Boolean)) inventory = sanitizeInventory(parsed);
+            } catch {
+              // битый json в базе — начинаем со стартового набора, но не падаем
+            }
+          }
+
+          client = {
+            ws,
+            playerId: player.id,
+            name: player.name,
+            x: saved?.x ?? WORLD.spawnX,
+            z: saved?.z ?? WORLD.spawnZ,
+            yaw: saved?.yaw ?? 0,
+            inventory,
+          };
+
+          // одно соединение на игрока: старое закрываем
+          const previous = clients.get(player.id);
+          if (previous && previous.ws !== ws) previous.ws.close(CLOSE.FORBIDDEN, 'replaced');
+
+          clients.set(player.id, client);
+          if (clients.size === 1) scenario.start();
+          log(`ws: игрок ${player.name} (#${player.id}) вошёл, ${clients.size} в сети`);
+
           ws.send(JSON.stringify({
             t: MSG.WELCOME,
-            you: playerId,
-            tick: Date.now(),
+            you: player.id,
+            name: player.name,
             serverTime: Date.now(),
           }));
+
+          ws.send(JSON.stringify({
+            t: MSG.SNAPSHOT,
+            you: player.id,
+            self: { id: player.id, name: player.name, x: client.x, z: client.z, yaw: client.yaw },
+            players: [...clients.values()].map(toView),
+            inventory: client.inventory,
+            npcs: npcs.map((npc) => ({ id: npc.id, name: npc.name, pos: npc.pos, yaw: npc.yaw })),
+          }));
+
+          // догоняем сюжет: свет и задание, которые уже случились без нас
+          for (const event of scenario.stateEvents()) {
+            ws.send(JSON.stringify({ t: MSG.EVENT, kind: event.kind, data: event.data }));
+          }
+          return;
+        }
+
+        case MSG.COMBINE: {
+          if (!client) return;
+
+          const i = Number(msg.i);
+          const j = Number(msg.j);
+          if (!Number.isInteger(i) || !Number.isInteger(j) || i === j) return;
+          if (i < 0 || j < 0 || i >= client.inventory.length || j >= client.inventory.length) return;
+
+          const first = client.inventory[i];
+          const second = client.inventory[j];
+
+          if (!first || !second) {
+            sendInventory(ws, client.inventory, 'Пустой слот');
+            return;
+          }
+
+          const recipe = findRecipe(first, second);
+          if (!recipe) {
+            sendInventory(ws, client.inventory, 'Из этого ничего не выходит');
+            return;
+          }
+
+          client.inventory[i] = recipe.result;
+          client.inventory[j] = null;
+          log(`игрок ${client.name}: ${first} + ${second} → ${recipe.result}`);
+
+          store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
+          sendInventory(ws, client.inventory, recipe.text);
+
+          if (recipe.result === 'flashlight') {
+            store.setFlag('has_light', '1');
+            scenario.fire('flag', { flag: 'has_light' });
+          }
+          return;
+        }
+
+        case MSG.ZONE: {
+          if (!client) return;
+          const chunk = String(msg.chunk ?? '');
+          if (!chunk) return;
+          scenario.fire('zone', { chunk });
+          return;
+        }
+
+        case MSG.SAY: {
+          if (!client) return;
+
+          const to = String(msg.to ?? '');
+          const text = String(msg.text ?? '').trim().slice(0, 300);
+          const npc = npcs.find((item) => item.id === to);
+          if (!npc || !text) return;
+
+          // не больше одного вопроса в секунду с человека: модель не бесплатная
+          const now = Date.now();
+          if (client.lastAsk && now - client.lastAsk < 1200) return;
+          client.lastAsk = now;
+
+          void respond(ws, client, npc, text);
+          return;
+        }
+
+        case MSG.INPUT: {
+          if (!client) return;
+          const x = Number(msg.x);
+          const z = Number(msg.z);
+          const yaw = Number(msg.yaw);
+          if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(yaw)) return;
+
+          // защита от телепорта: за один пакет больше двух метров — игнор
+          if (Math.hypot(x - client.x, z - client.z) > 2) return;
+
+          const clamped = inWorld(x, z);
+          client.x = clamped.x;
+          client.z = clamped.z;
+          client.yaw = yaw;
           return;
         }
 
@@ -150,8 +455,7 @@ function attachWebSocket(server) {
           return;
         }
 
-        case MSG.ECHO: {
-          ws.send(JSON.stringify({ t: MSG.ECHO, payload: msg.payload ?? null }));
+        case MSG.READY: {
           return;
         }
 
@@ -162,16 +466,91 @@ function attachWebSocket(server) {
 
     ws.on('close', (code) => {
       clearTimeout(helloTimer);
-      log('ws: игрок', playerId ?? '—', 'отключился, код', code);
+      if (!client) return;
+      if (clients.get(client.playerId) === client) clients.delete(client.playerId);
+      store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
+      log(`ws: игрок ${client.name} (#${client.playerId}) вышел, код ${code}, ${clients.size} в сети`);
     });
 
     ws.on('error', (err) => log('ws: ошибка', err.message));
   });
-
-  return wss;
 }
 
-/* ───────────────────────────── запуск ─────────────────────────────── */
+function toView(client) {
+  return { id: client.playerId, name: client.name, x: client.x, z: client.z, yaw: client.yaw };
+}
+
+function sendInventory(ws, slots, text = '') {
+  ws.send(JSON.stringify({ t: MSG.INVENTORY, slots, text }));
+}
+
+/** Отправляем ответ агента по кускам: видно, что он думает, а не молчит. */
+async function respond(ws, client, npc, text) {
+  try {
+    for await (const delta of agents.reply({
+      npc,
+      playerId: client.playerId,
+      playerName: client.name,
+      text,
+    })) {
+      if (ws.readyState !== ws.OPEN) return;
+      ws.send(JSON.stringify({ t: MSG.NPC_REPLY, id: npc.id, delta }));
+    }
+    if (ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ t: MSG.NPC_REPLY, id: npc.id, done: true }));
+    }
+  } catch (error) {
+    log('агент: сбой ответа —', error?.message ?? error);
+  }
+}
+
+/* ───────────────────────────── запуск ───────────────────────────── */
+
+function createServer() {
+  if (DEV) {
+    return { server: createHttpServer(handleHttp), scheme: 'http' };
+  }
+
+  const keyPath = join(CERTS, 'key.pem');
+  const certPath = join(CERTS, 'cert.pem');
+
+  if (existsSync(keyPath) && existsSync(certPath)) {
+    return {
+      server: createHttpsServer({ key: readFileSync(keyPath), cert: readFileSync(certPath) }, handleHttp),
+      scheme: 'https',
+    };
+  }
+
+  log('! сертификата нет — поднимаю http. Сделай `npm run cert`, иначе шифрования нет.');
+  return { server: createHttpServer(handleHttp), scheme: 'http' };
+}
+
+const { server, scheme } = createServer();
+attachWebSocket(server);
+
+// дельты позиций 20 раз в секунду
+setInterval(() => {
+  if (clients.size === 0) return;
+  const list = [...clients.values()].map(toView);
+  const payload = JSON.stringify({ t: MSG.PLAYERS, list });
+  for (const client of clients.values()) {
+    if (client.ws.readyState === client.ws.OPEN) client.ws.send(payload);
+  }
+}, 1000 / TICK.STATE_HZ);
+
+// запись состояния в базу: раз в секунду
+setInterval(() => {
+  for (const client of clients.values()) {
+    store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
+  }
+}, TICK.PERSIST_MS);
+
+// сценарий: четыре раза в секунду проверяем, не пришло ли время очередному шагу
+setInterval(() => scenario.tick(), 250);
+
+if (!existsSync(join(DIST, 'index.html'))) {
+  log('! dist/ не собран — сначала `npm run build`');
+}
 
 function lanAddresses() {
   const out = [];
@@ -183,41 +562,22 @@ function lanAddresses() {
   return out;
 }
 
-function createServer() {
-  const handler = (req, res) => serveStatic(req, res);
-
-  if (DEV) {
-    return { server: createHttpServer(handler), scheme: 'http', friendly: 'http://localhost:' + PORT };
-  }
-
-  const keyPath = join(CERTS, 'key.pem');
-  const certPath = join(CERTS, 'cert.pem');
-
-  if (existsSync(keyPath) && existsSync(certPath)) {
-    return {
-      server: createHttpsServer({ key: readFileSync(keyPath), cert: readFileSync(certPath) }, handler),
-      scheme: 'https',
-    };
-  }
-
-  log('! сертификата нет — поднимаю http.', 'Сделай `npm run cert`, иначе шифрования нет.');
-  return { server: createHttpServer(handler), scheme: 'http' };
-}
-
-const { server, scheme } = createServer();
-attachWebSocket(server);
-
-if (!existsSync(join(DIST, 'index.html'))) {
-  log('! dist/ не собран — сначала `npm run build`');
-}
-
 server.listen(PORT, '0.0.0.0', () => {
   log(`сервер слушает ${scheme}://0.0.0.0:${PORT}`);
   if (DEV) {
     log('режим разработки: клиент открывать через Vite (npm run dev:client)');
   } else {
-    for (const { name, ip } of lanAddresses()) {
-      log(`  ${scheme}://${ip}:${PORT}   (${name})`);
-    }
+    for (const { name, ip } of lanAddresses()) log(`  ${scheme}://${ip}:${PORT}   (${name})`);
   }
 });
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    log('остановка: сохраняю состояние');
+    for (const client of clients.values()) {
+      store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
+    }
+    store.close();
+    process.exit(0);
+  });
+}
