@@ -1,0 +1,25 @@
+{
+  "name": "bks5-blackout",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Поезд встал в тоннеле — 3D-игра в браузере по локальной сети",
+  "scripts": {
+    "dev:server": "node backend/server/index.js --dev",
+    "dev:client": "vite --config client/vite.config.ts",
+    "build": "vite build --config client/vite.config.ts",
+    "start": "node backend/server/index.js",
+    "cert": "node tools/make-cert.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "three": "^0.187.0",
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "selfsigned": "^5.5.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}

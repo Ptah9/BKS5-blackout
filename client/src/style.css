@@ -1,0 +1,51 @@
+:root {
+  color-scheme: dark;
+  --ink: #cfd6e0;
+  --dim: #6d7887;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #05070a;
+  color: var(--ink);
+  font: 13px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+#view {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#status {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgb(8 11 16 / 0.72);
+  border: 1px solid rgb(120 140 170 / 0.18);
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+}
+
+#status .row {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+#status .k {
+  color: var(--dim);
+}
+
+#status .v {
+  color: var(--ink);
+}
