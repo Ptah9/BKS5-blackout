@@ -5,3 +5,8 @@ data/
 *.log
 .vite/
 .DS_Store
+
+# секреты: ключи не должны попадать в историю
+.env
+.env.*
+!.env.example
