@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
 
-const BASE = process.env.BASE ?? 'http://127.0.0.1:8080';
+const BASE = process.env.BASE ?? 'http://127.0.0.1:8090';
 const WS_URL = BASE.replace(/^http/, 'ws') + '/ws';
 const FILE = join(tmpdir(), 'bks5-persist.json');
 

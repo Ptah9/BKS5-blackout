@@ -17,6 +17,9 @@ interface Handlers {
   onSnapshot?: (self: PlayerView, players: PlayerView[], inventory: Array<string | null>) => void;
   onPlayers?: (list: PlayerView[]) => void;
   onInventory?: (slots: Array<string | null>, text: string) => void;
+  onEvent?: (kind: string, data: Record<string, unknown>) => void;
+  onNpcs?: (list: Array<{ id: string; name: string; pos: number[]; yaw: number }>) => void;
+  onNpcReply?: (id: string, delta: string, done: boolean) => void;
   onPong?: (rttMs: number) => void;
   onAuthFailed?: () => void;
 }
@@ -78,6 +81,18 @@ export class Net {
     this.ws.send(JSON.stringify({ t: MSG.COMBINE, i, j }));
   }
 
+  /** Сообщаем серверу, что игрок вошёл в другую часть мира. */
+  sendZone(chunk: string): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.ZONE, chunk }));
+  }
+
+  /** Сказать персонажу. Ответ придёт потоком через onNpcReply. */
+  say(npcId: string, text: string): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.SAY, to: npcId, text }));
+  }
+
   ping(): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({ t: MSG.PING, id: ++this.pingId, clientTime: performance.now() }));
@@ -107,6 +122,17 @@ export class Net {
           (msg.players as PlayerView[]) ?? [],
           (msg.inventory as Array<string | null>) ?? [],
         );
+        this.handlers.onNpcs?.(
+          (msg.npcs as Array<{ id: string; name: string; pos: number[]; yaw: number }>) ?? [],
+        );
+        return;
+
+      case MSG.NPC_REPLY:
+        this.handlers.onNpcReply?.(
+          String(msg.id ?? ''),
+          String(msg.delta ?? ''),
+          Boolean(msg.done),
+        );
         return;
 
       case MSG.INVENTORY:
@@ -114,6 +140,10 @@ export class Net {
           (msg.slots as Array<string | null>) ?? [],
           String(msg.text ?? ''),
         );
+        return;
+
+      case MSG.EVENT:
+        this.handlers.onEvent?.(String(msg.kind ?? ''), (msg.data as Record<string, unknown>) ?? {});
         return;
 
       case MSG.PLAYERS:

@@ -59,6 +59,11 @@ export class Input {
   };
 
   private onKeyDown = (e: KeyboardEvent): void => {
+    // если фокус в поле ввода (чат с персонажем), клавиатура принадлежит ему:
+    // иначе пробел «съедался» и текст писался без пробелов
+    const target = e.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+
     // Space и стрелки иначе скроллят страницу под игрой
     if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
     if (e.repeat) return;
@@ -66,6 +71,8 @@ export class Input {
   };
 
   private onKeyUp = (e: KeyboardEvent): void => {
+    const target = e.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
     this.pressed.delete(e.code);
   };
 

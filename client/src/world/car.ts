@@ -93,7 +93,11 @@ function buildInstanced(
   return mesh;
 }
 
-export function buildCar(tex: Textures): CarBuild {
+export function buildCar(
+  tex: Textures,
+  zFrom = -CAR_HALF_LENGTH - 0.1,
+  zTo = CAR_HALF_LENGTH + 0.1,
+): CarBuild {
   const group = new THREE.Group();
   group.name = 'car';
 
@@ -136,7 +140,12 @@ export function buildCar(tex: Textures): CarBuild {
     sy: number,
     sz: number,
   ): void => {
-    buckets[bucket].push({ x, y, z, sx, sy, sz });
+    // коробка обрезается по границам чанка: деталь на стыке попадает
+    // в оба куска, а не исчезает на шве
+    const from = Math.max(z - sz / 2, zFrom);
+    const to = Math.min(z + sz / 2, zTo);
+    if (to - from < 1e-4) return;
+    buckets[bucket].push({ x, y, z: (from + to) / 2, sx, sy, sz: to - from });
   };
 
   // ── корпус ────────────────────────────────────────────────────────────
@@ -278,22 +287,24 @@ export function buildCar(tex: Textures): CarBuild {
   }
 
   const tubeGeo = new THREE.CylinderGeometry(0.019, 0.019, 1, 6);
-  const tubeMesh = new THREE.InstancedMesh(tubeGeo, materials.chrome, tubes.length);
+  const visibleTubes = tubes.filter((t) => t.z >= zFrom - 0.4 && t.z <= zTo + 0.4);
+  const tubeMesh = new THREE.InstancedMesh(tubeGeo, materials.chrome, Math.max(1, visibleTubes.length));
   const tubeMatrix = new THREE.Matrix4();
   const tubePosition = new THREE.Vector3();
   const tubeScale = new THREE.Vector3();
   const tubeQuaternion = new THREE.Quaternion();
 
-  tubes.forEach((t, i) => {
+  visibleTubes.forEach((t, i) => {
     const length = t.y1 - t.y0;
     tubePosition.set(t.x, (t.y0 + t.y1) / 2, t.z);
     tubeScale.set(1, length, 1);
     tubeMatrix.compose(tubePosition, tubeQuaternion, tubeScale);
     tubeMesh.setMatrixAt(i, tubeMatrix);
   });
+  tubeMesh.count = visibleTubes.length;
   tubeMesh.instanceMatrix.needsUpdate = true;
   tubeMesh.name = 'tubes';
-  group.add(tubeMesh);
+  if (visibleTubes.length > 0) group.add(tubeMesh);
 
   // ── телефоны пассажиров ───────────────────────────────────────────────
   const phones: THREE.Vector3[] = [];
@@ -301,9 +312,11 @@ export function buildCar(tex: Textures): CarBuild {
   // чуть крупнее и мягче по цвету: на 640 точках мелкие яркие прямоугольники
   // мигают на пиксельной сетке, это читается как «сломанный экран»
   const phoneMat = new THREE.MeshBasicMaterial({ color: 0x86a6e8, side: THREE.DoubleSide });
-  const phoneZ = [-8.3, -7.6, -4.6, -3.4, -2.4, -1.2, 1.2, 2.4, 3.6, 8.1];
+  const phoneZ = [-8.3, -7.6, -4.6, -3.4, -2.4, -1.2, 1.2, 2.4, 3.6, 8.1].filter(
+    (z) => z >= zFrom && z <= zTo,
+  );
 
-  const phoneMesh = new THREE.InstancedMesh(phoneGeo, phoneMat, phoneZ.length);
+  const phoneMesh = new THREE.InstancedMesh(phoneGeo, phoneMat, Math.max(1, phoneZ.length));
   const phoneMatrix = new THREE.Matrix4();
   const phoneQuat = new THREE.Quaternion();
   const phoneScale = new THREE.Vector3(1, 1, 1);
@@ -316,15 +329,19 @@ export function buildCar(tex: Textures): CarBuild {
     phoneMesh.setMatrixAt(i, phoneMatrix);
     phones.push(new THREE.Vector3(x, 1.2, z));
   });
+  phoneMesh.count = phoneZ.length;
   phoneMesh.instanceMatrix.needsUpdate = true;
   phoneMesh.name = 'phones';
-  group.add(phoneMesh);
+  if (phoneZ.length > 0) group.add(phoneMesh);
 
-  // ── коллизии: сиденья по бортам ───────────────────────────────────────
+  // ── коллизии: сиденья по бортам, обрезанные по границам чанка ─────────
   const colliders: Box2[] = [];
-  for (const [z0, z1] of SEAT_RUNS) {
-    colliders.push({ minX: -CAR_HALF_WIDTH, maxX: -0.7, minZ: z0, maxZ: z1 });
-    colliders.push({ minX: 0.7, maxX: CAR_HALF_WIDTH, minZ: z0, maxZ: z1 });
+  for (const [runFrom, runTo] of SEAT_RUNS) {
+    const from = Math.max(runFrom, zFrom);
+    const to = Math.min(runTo, zTo);
+    if (to - from < 0.05) continue;
+    colliders.push({ minX: -CAR_HALF_WIDTH, maxX: -0.7, minZ: from, maxZ: to });
+    colliders.push({ minX: 0.7, maxX: CAR_HALF_WIDTH, minZ: from, maxZ: to });
   }
 
   group.userData.seatCount = seatCount;

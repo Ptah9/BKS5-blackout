@@ -42,6 +42,15 @@ const SCHEMA = `
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS npc_memory (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    npc_id     TEXT NOT NULL,
+    player_id  INTEGER NOT NULL,
+    role       TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 `;
 
 export class Store {
@@ -66,6 +75,17 @@ export class Store {
       dropSession: this.db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
       dropExpired: this.db.prepare('DELETE FROM sessions WHERE expires_at < ?'),
       loadState: this.db.prepare('SELECT x, z, yaw, inventory FROM state WHERE player_id = ?'),
+      getFlag: this.db.prepare('SELECT value FROM world_flags WHERE key = ?'),
+      setFlag: this.db.prepare(
+        `INSERT INTO world_flags (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      ),
+      addMemory: this.db.prepare(
+        'INSERT INTO npc_memory (npc_id, player_id, role, text, created_at) VALUES (?, ?, ?, ?, ?)',
+      ),
+      recentMemory: this.db.prepare(
+        'SELECT role, text FROM npc_memory WHERE npc_id = ? AND player_id = ? ORDER BY id DESC LIMIT ?',
+      ),
       saveState: this.db.prepare(
         `INSERT INTO state (player_id, x, z, yaw, inventory, updated_at) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(player_id) DO UPDATE SET x = excluded.x, z = excluded.z,
@@ -117,6 +137,23 @@ export class Store {
 
   saveState(playerId, x, z, yaw, inventory) {
     this.q.saveState.run(playerId, x, z, yaw, JSON.stringify(inventory ?? []), Date.now());
+  }
+
+  getFlag(key) {
+    return this.q.getFlag.get(key)?.value ?? null;
+  }
+
+  setFlag(key, value) {
+    this.q.setFlag.run(key, String(value));
+  }
+
+  addMemory(npcId, playerId, role, text) {
+    this.q.addMemory.run(npcId, playerId, role, String(text).slice(0, 600), Date.now());
+  }
+
+  /** Последние реплики в хронологическом порядке — их и отдаём модели. */
+  recentMemory(npcId, playerId, limit = 12) {
+    return this.q.recentMemory.all(npcId, playerId, limit).reverse();
   }
 
   close() {

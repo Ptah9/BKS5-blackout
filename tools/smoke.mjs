@@ -9,7 +9,7 @@ import { WebSocket } from 'ws';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // свой же локальный сертификат
 
-const BASE = process.env.BASE ?? 'http://127.0.0.1:8080';
+const BASE = process.env.BASE ?? 'http://127.0.0.1:8090';
 const WS_URL = BASE.replace(/^http/, 'ws') + '/ws';
 
 let failed = 0;

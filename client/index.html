@@ -46,6 +46,8 @@
 
     <div id="thought" class="hidden"></div>
 
+    <div id="objective" class="hidden"></div>
+
     <div id="inv"></div>
 
     <div id="status">
@@ -53,6 +55,17 @@
       <div class="row"><span class="k">сокет</span><span class="v" id="s-conn">—</span></div>
       <div class="row"><span class="k">пинг</span><span class="v" id="s-ping">—</span></div>
       <div class="row"><span class="k">кадры</span><span class="v" id="s-fps">—</span></div>
+      <div class="row"><span class="k">чанки</span><span class="v" id="s-chunks">—</span></div>
+      <div class="row"><span class="k">память</span><span class="v" id="s-mem">—</span></div>
+    </div>
+
+    <div id="talk" class="hidden"></div>
+
+    <div id="subtitles" class="hidden"></div>
+
+    <div id="chat" class="hidden">
+      <span id="chat-name"></span>
+      <input id="chat-input" maxlength="300" placeholder="сказать…" autocomplete="off" />
     </div>
 
     <script type="module" src="/src/main.ts"></script>

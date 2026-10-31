@@ -1,0 +1,27 @@
+{
+  "id": "metro_tunnel",
+  "title": "Поезд встал в тоннеле",
+  "beats": [
+    { "at": 2, "do": "thought", "text": "Поезд встал. Тишина такая, что слышно чужое дыхание." },
+    { "at": 7, "do": "lights", "value": 0, "fadeMs": 1400 },
+    { "at": 8, "do": "phone", "value": "no_signal" },
+    { "at": 10, "do": "thought", "text": "Свет погас целиком. На экране — «нет сети»." },
+    { "at": 14, "do": "objective", "text": "Найди, чем осветить вагон" }
+  ],
+  "triggers": [
+    {
+      "on": "flag",
+      "flag": "has_light",
+      "once": true,
+      "do": "thought",
+      "text": "Теперь видно. И люди вокруг смотрят на тебя."
+    },
+    {
+      "on": "zone",
+      "chunk": "car_a",
+      "once": true,
+      "do": "thought",
+      "text": "Впереди кабина машиниста. Дверь приоткрыта."
+    }
+  ]
+}

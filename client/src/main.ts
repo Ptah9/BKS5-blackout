@@ -5,6 +5,7 @@ import { Input } from './core/input';
 import { startLoop } from './core/loop';
 import { RemotePlayers } from './game/remotePlayers';
 import { Player } from './game/player';
+import type { RemotePlayer } from './net/replica';
 import { Inventory } from './game/inventory';
 import { Pulse } from './game/pulse';
 import { Replica } from './net/replica';
@@ -13,8 +14,8 @@ import { PostFX } from './render/post';
 import { createEnvironment, createTextures } from './render/textures';
 import { Hud } from './ui/hud';
 import { ensureSession, forgetSession } from './ui/login';
-import { buildCar, CAR_HALF_LENGTH, CAR_HALF_WIDTH, CAR_HEIGHT } from './world/car';
-import { buildTunnel } from './world/tunnel';
+import { ChunkManager } from './world/chunks';
+import { CAR_HALF_LENGTH, CAR_HALF_WIDTH, CAR_HEIGHT } from './world/car';
 
 /**
  * M2: вход по логину с паролем, состояние в базе, другие игроки в вагоне.
@@ -49,8 +50,11 @@ async function main(): Promise<void> {
   const elPing = document.getElementById('s-ping') as HTMLElement;
   const elFps = document.getElementById('s-fps') as HTMLElement;
   const elName = document.getElementById('s-name') as HTMLElement;
+  const elChunks = document.getElementById('s-chunks') as HTMLElement;
+  const elMem = document.getElementById('s-mem') as HTMLElement;
   const elStatus = document.getElementById('status') as HTMLElement;
   const elHint = document.getElementById('hint') as HTMLElement;
+  const elObjective = document.getElementById('objective') as HTMLElement;
 
   elName.textContent = session.name;
 
@@ -76,9 +80,8 @@ async function main(): Promise<void> {
   /* ───────────────────────────── мир ───────────────────────────── */
 
   const textures = createTextures();
-  const car = buildCar(textures);
-  scene.add(car.group);
-  scene.add(buildTunnel());
+  const chunks = new ChunkManager(textures);
+  scene.add(chunks.group);
 
   const remotePlayers = new RemotePlayers();
   scene.add(remotePlayers.group);
@@ -110,6 +113,35 @@ async function main(): Promise<void> {
     return light;
   });
 
+  // Свет в вагоне: 1 — горят лампы, 0 — полный блэкаут.
+  // Значение приходит из сценария, поэтому его держим отдельно от рендера.
+  let lightsValue = 1;
+
+  function setLights(value: number): void {
+    lightsValue = Math.max(0, Math.min(1, value));
+  }
+
+  function updateLights(): void {
+    // лампы лежат внутри чанков, поэтому ищем их каждый кадр, а не один раз
+    chunks.group.traverse((node) => {
+      if (node.name !== 'lamp') return;
+      const mesh = node as THREE.Mesh;
+      const material = mesh.material as THREE.MeshStandardMaterial;
+      material.emissive.setRGB(1, 0.97, 0.88).multiplyScalar(lightsValue * 0.9);
+    });
+    ambient.intensity = 0.16 + lightsValue * 0.55;
+    scene.environmentIntensity = 0.25 + lightsValue * 0.35;
+  }
+
+  function setObjective(text: string): void {
+    if (!text) {
+      elObjective.classList.add('hidden');
+      return;
+    }
+    elObjective.textContent = text;
+    elObjective.classList.remove('hidden');
+  }
+
   const bounds = {
     minX: -CAR_HALF_WIDTH,
     maxX: CAR_HALF_WIDTH,
@@ -125,12 +157,45 @@ async function main(): Promise<void> {
   const hud = new Hud(inventory);
   const pulse = new Pulse();
 
+  /* ── персонажи и разговор ─────────────────────────────────────────── */
+
+  const elTalk = document.getElementById('talk') as HTMLElement;
+  const elSubtitles = document.getElementById('subtitles') as HTMLElement;
+  const elChat = document.getElementById('chat') as HTMLElement;
+  const elChatName = document.getElementById('chat-name') as HTMLElement;
+  const elChatInput = document.getElementById('chat-input') as HTMLInputElement;
+
+  const npcEntities: RemotePlayer[] = [];
+  const npcIds: string[] = [];
+
+  let nearNpc: RemotePlayer | null = null;
+  let talkingTo: RemotePlayer | null = null;
+  let chatOpen = false;
+  let subtitleText = '';
+  let subtitleTimer = 0;
+
+  function openChat(npc: RemotePlayer): void {
+    talkingTo = npc;
+    chatOpen = true;
+    elChatName.textContent = npc.name;
+    elChat.classList.remove('hidden');
+    elChatInput.value = '';
+    document.exitPointerLock();
+    elChatInput.focus();
+  }
+
+  function closeChat(): void {
+    chatOpen = false;
+    talkingTo = null;
+    elChat.classList.add('hidden');
+    elChatInput.blur();
+  }
+
   hud.say('Темно. В кармане бутылка воды и телефон — экран светит синим.');
 
   function applyFlashlight(hasLight: boolean): void {
     flashlight.intensity = hasLight ? 210 : 130;
     flashlight.angle = hasLight ? Math.PI / 7.5 : Math.PI / 9;
-    ambient.intensity = hasLight ? 0.2 : 0.16;
   }
 
   function placeName(): string {
@@ -184,8 +249,52 @@ async function main(): Promise<void> {
       if (text) hud.say(text);
       applyFlashlight(inventory.has('flashlight'));
     },
+    onEvent: (kind, data) => {
+      switch (kind) {
+        case 'thought':
+          hud.say(String(data.text ?? ''), 6);
+          return;
+        case 'objective':
+          setObjective(String(data.text ?? ''));
+          return;
+        case 'lights':
+          setLights(Number(data.value ?? 0));
+          return;
+        case 'phone':
+          hud.say('На экране — «нет сети».', 4);
+          return;
+        default:
+          console.info('[сценарий] действие без обработчика:', kind, data);
+      }
+    },
     onPlayers: (list) => {
       replica.apply(list, session.playerId, performance.now());
+    },
+    onNpcs: (list) => {
+      npcEntities.length = 0;
+      npcIds.length = 0;
+      list.forEach((npc, index) => {
+        npcIds.push(npc.id);
+        npcEntities.push({
+          id: 1000 + index,
+          name: npc.name,
+          x: npc.pos[0],
+          z: npc.pos[2],
+          yaw: npc.yaw,
+          targetX: npc.pos[0],
+          targetZ: npc.pos[2],
+          targetYaw: npc.yaw,
+          lastSeen: Number.MAX_SAFE_INTEGER,
+        });
+      });
+    },
+    onNpcReply: (_id, delta, done) => {
+      if (delta) {
+        subtitleText += delta;
+        elSubtitles.textContent = `${talkingTo?.name ?? '—'}: ${subtitleText}`;
+        elSubtitles.classList.remove('hidden');
+      }
+      if (done) subtitleTimer = 9;
     },
     onPong: (ms) => {
       elPing.textContent = `${Math.round(ms)} мс`;
@@ -203,6 +312,19 @@ async function main(): Promise<void> {
   /* ───────────────────────────── кадр ───────────────────────────── */
 
   addEventListener('keydown', (event) => {
+    if (event.code === 'Escape' && chatOpen) {
+      closeChat();
+      return;
+    }
+
+    if (event.code === 'KeyT' && !chatOpen) {
+      if (nearNpc) openChat(nearNpc);
+      return;
+    }
+
+    // пока игрок печатает, игровые клавиши не работают
+    if (chatOpen) return;
+
     if (event.code === 'F3') {
       elStatus.classList.toggle('hidden');
       return;
@@ -225,9 +347,24 @@ async function main(): Promise<void> {
     }
   });
 
-  const phones = car.phones;
+  elChatInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+
+    const text = elChatInput.value.trim();
+    if (!text || !talkingTo) return;
+
+    const npcId = npcIds[talkingTo.id - 1000];
+    if (npcId) net.say(npcId, text);
+
+    subtitleText = '';
+    elSubtitles.textContent = `${talkingTo.name}: …`;
+    elSubtitles.classList.remove('hidden');
+    elChatInput.value = '';
+  });
 
   function updatePhoneLights(): void {
+    const phones = chunks.phones;
     const sorted = [...phones].sort(
       (a, b) => a.distanceToSquared(player.position) - b.distanceToSquared(player.position),
     );
@@ -241,10 +378,35 @@ async function main(): Promise<void> {
   let inputAccumulator = 0;
   let hudAccumulator = 0;
   let lastFrame = performance.now();
+  let lastZone = '';
 
   const loop = startLoop(
     (dt) => {
-      player.update(dt, input, car.colliders, bounds);
+      if (!chatOpen) {
+        player.update(dt, input, chunks.colliders, bounds);
+      }
+      chunks.update(player.position.z);
+
+      // ближайший персонаж: подсказка «T — поговорить»
+      let closest: RemotePlayer | null = null;
+      let bestDistance = 2.6;
+      for (const npc of npcEntities) {
+        const distance = Math.hypot(npc.x - player.position.x, npc.z - player.position.z);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          closest = npc;
+        }
+      }
+      nearNpc = closest;
+      elTalk.classList.toggle('hidden', !nearNpc || chatOpen);
+      if (nearNpc) elTalk.textContent = `T — поговорить: ${nearNpc.name}`;
+
+      // сообщаем серверу, когда игрок переходит в другую часть мира
+      const zone = player.position.z < 0 ? 'car_a' : 'car_b';
+      if (zone !== lastZone) {
+        lastZone = zone;
+        net.sendZone(zone);
+      }
 
       pulse.update(dt, {
         lightOn: inventory.has('flashlight'),
@@ -253,7 +415,7 @@ async function main(): Promise<void> {
       });
 
       inputAccumulator += dt;
-      if (inputAccumulator >= INPUT_INTERVAL) {
+      if (!chatOpen && inputAccumulator >= INPUT_INTERVAL) {
         inputAccumulator = 0;
         net.sendInput(player.position.x, player.position.z, player.facing);
       }
@@ -265,8 +427,14 @@ async function main(): Promise<void> {
 
       emergency.intensity = 2.0 + Math.sin(elapsed * 2.3) * 0.5;
       updatePhoneLights();
+      updateLights();
 
-      remotePlayers.update(replica.step(frameDt, now));
+      remotePlayers.update([...replica.step(frameDt, now), ...npcEntities]);
+
+      if (subtitleTimer > 0) {
+        subtitleTimer -= frameDt;
+        if (subtitleTimer <= 0) elSubtitles.classList.add('hidden');
+      }
 
       hud.tick(frameDt);
       hudAccumulator += frameDt;
@@ -284,6 +452,9 @@ async function main(): Promise<void> {
 
   const fpsTimer = setInterval(() => {
     elFps.textContent = String(Math.round(loop.fps()));
+    const stats = chunks.stats();
+    elChunks.textContent = `${stats.loadedChunks} из ${stats.totalChunks}`;
+    elMem.textContent = `${stats.loadedMb} из ${stats.totalMb} МБ · ${stats.loadedPercent}%`;
   }, 500);
 
   window.__game = { player, camera, scene, renderer, fps: () => loop.fps() };

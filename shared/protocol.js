@@ -25,6 +25,12 @@ export const MSG = Object.freeze({
   // предметы
   COMBINE: 'combine',
   INVENTORY: 'inventory',
+  // сценарий
+  EVENT: 'event',
+  ZONE: 'zone',
+  // агенты
+  SAY: 'say',
+  NPC_REPLY: 'npc_reply',
 });
 
 /** Коды закрытия WebSocket. 4xxx — наши, прикладные. */

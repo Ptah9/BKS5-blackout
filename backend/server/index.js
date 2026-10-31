@@ -19,6 +19,8 @@ import { WebSocketServer } from 'ws';
 
 import { Store } from '../db/store.js';
 import { hashPassword, hashToken, newToken, verifyPassword } from './auth.js';
+import { AgentRuntime } from './agent.js';
+import { Scenario } from './scenario.js';
 import { START_INVENTORY, findRecipe, sanitizeInventory } from '../../shared/items.js';
 import { toRussianName } from '../../shared/translit.js';
 import { AUTH, CLOSE, HELLO_TIMEOUT_MS, MSG, PROTOCOL_VERSION, TICK, WORLD } from '../../shared/protocol.js';
@@ -29,14 +31,58 @@ const CERTS = join(ROOT, 'certs');
 const DB_FILE = join(ROOT, 'data', 'game.db');
 
 const DEV = process.argv.includes('--dev');
-const PORT = DEV ? 8080 : 8443;
+// 8080 на этой машине занят отладочным сервером браузера, поэтому dev — на 8090
+const DEV_PORT = 8090;
+const PORT = DEV ? DEV_PORT : 8443;
 
 const log = (...args) => console.log(`[${new Date().toLocaleTimeString('ru-RU')}]`, ...args);
+
+/**
+ * Читаем .env без зависимостей. Файл в .gitignore: ключи в историю не попадают.
+ * Уже выставленные переменные окружения не перетираем.
+ */
+function loadDotEnv(file) {
+  if (!existsSync(file)) return;
+  const text = readFileSync(file, 'utf8');
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq < 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+    if (key && !(key in process.env)) process.env[key] = value;
+  }
+}
+
+loadDotEnv(join(ROOT, '.env'));
 
 /* ───────────────────────────── база ───────────────────────────── */
 
 const store = new Store(DB_FILE);
 log('база:', DB_FILE);
+
+// Персонажи и их характеры — в данных, а не в коде сервера.
+const npcs = JSON.parse(readFileSync(join(ROOT, 'content', 'npcs.json'), 'utf8')).npcs;
+const agents = new AgentRuntime({
+  store,
+  key: process.env.DEEPSEEK_API_KEY ?? null,
+  log,
+});
+log('агенты:', agents.mode === 'deepseek' ? 'DeepSeek по API' : 'правила (ключа нет)');
+
+// Сценарий читается один раз на старте. Флаги мира живут в базе,
+// поэтому перезапуск сервера не откатывает «найден фонарь» и подобное.
+const scenario = Scenario.load(join(ROOT, 'content', 'scenario', 'metro_tunnel.json'), {
+  store,
+  log,
+  broadcast(event) {
+    const payload = JSON.stringify({ t: MSG.EVENT, kind: event.kind, data: event.data });
+    for (const client of clients.values()) {
+      if (client.ws.readyState === client.ws.OPEN) client.ws.send(payload);
+    }
+  },
+});
 
 /* ───────────────────────────── HTTP ───────────────────────────── */
 
@@ -295,6 +341,7 @@ function attachWebSocket(server) {
           if (previous && previous.ws !== ws) previous.ws.close(CLOSE.FORBIDDEN, 'replaced');
 
           clients.set(player.id, client);
+          if (clients.size === 1) scenario.start();
           log(`ws: игрок ${player.name} (#${player.id}) вошёл, ${clients.size} в сети`);
 
           ws.send(JSON.stringify({
@@ -310,7 +357,13 @@ function attachWebSocket(server) {
             self: { id: player.id, name: player.name, x: client.x, z: client.z, yaw: client.yaw },
             players: [...clients.values()].map(toView),
             inventory: client.inventory,
+            npcs: npcs.map((npc) => ({ id: npc.id, name: npc.name, pos: npc.pos, yaw: npc.yaw })),
           }));
+
+          // догоняем сюжет: свет и задание, которые уже случились без нас
+          for (const event of scenario.stateEvents()) {
+            ws.send(JSON.stringify({ t: MSG.EVENT, kind: event.kind, data: event.data }));
+          }
           return;
         }
 
@@ -342,6 +395,36 @@ function attachWebSocket(server) {
 
           store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
           sendInventory(ws, client.inventory, recipe.text);
+
+          if (recipe.result === 'flashlight') {
+            store.setFlag('has_light', '1');
+            scenario.fire('flag', { flag: 'has_light' });
+          }
+          return;
+        }
+
+        case MSG.ZONE: {
+          if (!client) return;
+          const chunk = String(msg.chunk ?? '');
+          if (!chunk) return;
+          scenario.fire('zone', { chunk });
+          return;
+        }
+
+        case MSG.SAY: {
+          if (!client) return;
+
+          const to = String(msg.to ?? '');
+          const text = String(msg.text ?? '').trim().slice(0, 300);
+          const npc = npcs.find((item) => item.id === to);
+          if (!npc || !text) return;
+
+          // не больше одного вопроса в секунду с человека: модель не бесплатная
+          const now = Date.now();
+          if (client.lastAsk && now - client.lastAsk < 1200) return;
+          client.lastAsk = now;
+
+          void respond(ws, client, npc, text);
           return;
         }
 
@@ -401,6 +484,26 @@ function sendInventory(ws, slots, text = '') {
   ws.send(JSON.stringify({ t: MSG.INVENTORY, slots, text }));
 }
 
+/** Отправляем ответ агента по кускам: видно, что он думает, а не молчит. */
+async function respond(ws, client, npc, text) {
+  try {
+    for await (const delta of agents.reply({
+      npc,
+      playerId: client.playerId,
+      playerName: client.name,
+      text,
+    })) {
+      if (ws.readyState !== ws.OPEN) return;
+      ws.send(JSON.stringify({ t: MSG.NPC_REPLY, id: npc.id, delta }));
+    }
+    if (ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ t: MSG.NPC_REPLY, id: npc.id, done: true }));
+    }
+  } catch (error) {
+    log('агент: сбой ответа —', error?.message ?? error);
+  }
+}
+
 /* ───────────────────────────── запуск ───────────────────────────── */
 
 function createServer() {
@@ -441,6 +544,9 @@ setInterval(() => {
     store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
   }
 }, TICK.PERSIST_MS);
+
+// сценарий: четыре раза в секунду проверяем, не пришло ли время очередному шагу
+setInterval(() => scenario.tick(), 250);
 
 if (!existsSync(join(DIST, 'index.html'))) {
   log('! dist/ не собран — сначала `npm run build`');
