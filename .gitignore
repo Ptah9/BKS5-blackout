@@ -1,0 +1,7 @@
+node_modules/
+dist/
+certs/
+data/
+*.log
+.vite/
+.DS_Store
