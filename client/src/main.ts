@@ -58,6 +58,8 @@ async function main(): Promise<void> {
   const elMem = document.getElementById('s-mem') as HTMLElement;
   const elPanic = document.getElementById('v-panic') as HTMLElement;
   const elTrust = document.getElementById('v-trust') as HTMLElement;
+  const elAir = document.getElementById('v-air') as HTMLElement;
+  const elStress = document.getElementById('stress') as HTMLElement;
   const elStatus = document.getElementById('status') as HTMLElement;
   const elHint = document.getElementById('hint') as HTMLElement;
   const elObjective = document.getElementById('objective') as HTMLElement;
@@ -136,6 +138,8 @@ async function main(): Promise<void> {
   let lightsValue = 1;
   let lastAppliedLights = -1;
   let lastChunkVersion = -1;
+  /** Сила тряски камеры от паники: 0 — спокойно, 1 — психоз. */
+  let shake = 0;
 
   function setLights(value: number): void {
     lightsValue = Math.max(0, Math.min(1, value));
@@ -166,12 +170,20 @@ async function main(): Promise<void> {
     elObjective.classList.remove('hidden');
   }
 
-  /** Паника и доверие приходят с сервера: это состояние мира, а не клиента. */
-  function setStats(panic: number, trust: number): void {
+  /** Паника, доверие и воздух приходят с сервера: это состояние мира. */
+  function setStats(panic: number, trust: number, air: number): void {
     elPanic.textContent = String(panic);
     elTrust.textContent = String(trust);
+    elAir.textContent = String(air);
+
     elPanic.classList.toggle('high', panic >= 65);
     elTrust.classList.toggle('high', trust >= 65);
+    elAir.classList.toggle('low', air <= 40);
+
+    // «спираль паники»: чем выше, тем плотнее виньетка и заметнее тряска
+    const stress = Math.max(0, Math.min(1, (panic - 30) / 70));
+    elStress.style.opacity = String(stress * 0.75);
+    shake = stress * 0.006;
   }
 
   /* ── катсцены ─────────────────────────────────────────────────────── */
@@ -366,7 +378,7 @@ async function main(): Promise<void> {
           hud.say(String(data.text ?? ''), 5);
           return;
         case 'stats':
-          setStats(Number(data.panic ?? 0), Number(data.trust ?? 0));
+          setStats(Number(data.panic ?? 0), Number(data.trust ?? 0), Number(data.air ?? 100));
           return;
         case 'phone':
           hud.say('На экране — «нет сети».', 4);
@@ -605,6 +617,13 @@ async function main(): Promise<void> {
       }
 
       elHint.classList.toggle('hidden', input.pointerLocked);
+
+      // «спираль паники»: на высоких фазах камеру потряхивает
+      if (shake > 0) {
+        camera.position.x += (Math.random() - 0.5) * shake;
+        camera.position.y += (Math.random() - 0.5) * shake;
+      }
+
       post.render(renderer, scene, camera, elapsed);
       void alpha;
     },

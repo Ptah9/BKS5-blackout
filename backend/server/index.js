@@ -74,6 +74,7 @@ const props = JSON.parse(readFileSync(join(ROOT, 'content', 'props.json'), 'utf8
 const stats = {
   panic: Number(store.getFlag('panic') ?? 20),
   trust: Number(store.getFlag('trust') ?? 50),
+  air: Number(store.getFlag('air') ?? 100),
 };
 
 /** Рассылка события всем подключённым; действия со статистикой не пересылаются. */
@@ -90,7 +91,7 @@ function broadcast(event) {
 }
 
 function changeStat(key, delta) {
-  if (key !== 'panic' && key !== 'trust') return;
+  if (key !== 'panic' && key !== 'trust' && key !== 'air') return;
 
   const next = Math.max(0, Math.min(100, Math.round(stats[key] + Number(delta ?? 0))));
   if (next === stats[key]) return;
@@ -98,7 +99,7 @@ function changeStat(key, delta) {
   stats[key] = next;
   store.setFlag(key, next);
   log(`мир: ${key} → ${next}`);
-  broadcast({ kind: 'stats', data: { panic: stats.panic, trust: stats.trust } });
+  broadcast({ kind: 'stats', data: { panic: stats.panic, trust: stats.trust, air: stats.air } });
 }
 const agents = new AgentRuntime({
   store,
@@ -476,7 +477,7 @@ function attachWebSocket(server) {
           ws.send(JSON.stringify({
             t: MSG.EVENT,
             kind: 'stats',
-            data: { panic: stats.panic, trust: stats.trust },
+            data: { panic: stats.panic, trust: stats.trust, air: stats.air },
           }));
           return;
         }
@@ -551,6 +552,8 @@ function attachWebSocket(server) {
 
           // открытая дверь кабины пугает: там никого нет, и это заметно
           if (verb.id === 'open') changeStat('panic', 4);
+          // открытая форточка возвращает воздух
+          if (verb.air) changeStat('air', Number(verb.air));
 
           log(`игрок ${client.name}: ${prop.id} → ${verb.id}`);
           ws.send(JSON.stringify({
@@ -638,8 +641,10 @@ function attachWebSocket(server) {
         scenario.reset();
         stats.panic = 20;
         stats.trust = 50;
+        stats.air = 100;
         store.setFlag('panic', 20);
         store.setFlag('trust', 50);
+        store.setFlag('air', 100);
       }
     });
 
@@ -736,6 +741,17 @@ setInterval(() => {
 
 // сценарий: четыре раза в секунду проверяем, не пришло ли время очередному шагу
 setInterval(() => scenario.tick(), 250);
+
+// духота: через полминуты после блэкаута воздух в вагоне начинает падать
+let airTick = 0;
+setInterval(() => {
+  if (!scenario.running || clients.size === 0) return;
+  const elapsed = (Date.now() - scenario.startedAt) / 1000;
+  if (elapsed < 30) return;
+
+  airTick++;
+  if (airTick % 2 === 0 && stats.air > 0) changeStat('air', -1);
+}, 1000);
 
 if (!existsSync(join(DIST, 'index.html'))) {
   log('! dist/ не собран — сначала `npm run build`');
