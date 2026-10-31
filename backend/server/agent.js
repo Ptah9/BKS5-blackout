@@ -14,21 +14,60 @@ const SYSTEM_RULES = `Ты персонаж игры про застрявший
 Не описывай свои эмоции в скобках, не пиши ремарки, только прямую речь.
 Не повторяй дословно то, что уже говорил.`;
 
+/**
+ * Проверка, что локальная модель доступна: спрашиваем список моделей Ollama.
+ * Нужна на старте сервера, чтобы в логе было честно написано, какой мозг включён.
+ */
+export async function probeLocal(url, model, format = 'ollama', apiKey = null) {
+  try {
+    const base = url.replace(/\/+$/, '');
+    const path = format === 'openai' ? '/v1/models' : '/api/tags';
+    const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+    const response = await fetch(`${base}${path}`, { headers, signal: AbortSignal.timeout(2500) });
+    if (!response.ok) return false;
+
+    const data = await response.json();
+
+    if (format === 'openai') {
+      const names = (data.data ?? []).map((item) => String(item.id ?? ''));
+      return names.length > 0;
+    }
+
+    const names = (data.models ?? []).map((item) => String(item.name ?? ''));
+    const family = model.split(':')[0];
+    return names.some((name) => name === model || name.startsWith(`${family}:`));
+  } catch {
+    return false;
+  }
+}
+
 /** Сколько последних реплик держим в памяти диалога. */
 const MEMORY_LIMIT = 12;
 
 export class AgentRuntime {
   /**
-   * @param {{ store: any, key: string | null, log: (...a: any[]) => void, model?: string }} options
+   * @param {{ store: any, key: string | null, localUrl?: string | null, localModel?: string, log: (...a: any[]) => void, model?: string }} options
    */
-  constructor({ store, key, log, model = 'deepseek-chat' }) {
+  constructor({ store, key, localUrl = null, localModel = 'qwen2.5:7b-instruct', localFormat = 'ollama', localKey = null, log, model = 'deepseek-chat' }) {
     this.store = store;
     this.key = key;
+    this.localUrl = localUrl ? localUrl.replace(/\/+$/, '') : null;
+    this.localModel = localModel;
+    this.localFormat = localFormat === 'openai' ? 'openai' : 'ollama';
+    this.localKey = localKey;
     this.log = log;
     this.model = model;
   }
 
+  /** Заголовки для локального сервера: Strata с --access lan требует ключ. */
+  get localHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    if (this.localKey) headers.Authorization = `Bearer ${this.localKey}`;
+    return headers;
+  }
+
   get mode() {
+    if (this.localUrl) return 'local';
     return this.key ? 'deepseek' : 'rules';
   }
 
@@ -50,7 +89,15 @@ export class AgentRuntime {
     let answer = '';
 
     try {
-      if (this.key) {
+      if (this.localUrl) {
+        const stream = this.localFormat === 'openai'
+          ? this.streamOpenAI(messages)
+          : this.streamOllama(messages);
+        for await (const chunk of stream) {
+          answer += chunk;
+          yield chunk;
+        }
+      } else if (this.key) {
         for await (const chunk of this.streamDeepSeek(messages)) {
           answer += chunk;
           yield chunk;
@@ -62,7 +109,20 @@ export class AgentRuntime {
         }
       }
     } catch (error) {
-      this.log('агент: ошибка модели, отвечаю правилами —', error?.message ?? error);
+      this.log('агент: модель не ответила, переключаюсь —', error?.message ?? error);
+
+      // если локальная не поднялась, пробуем DeepSeek, и только потом правила
+      if (!answer && this.localUrl && this.key) {
+        try {
+          for await (const chunk of this.streamDeepSeek(messages)) {
+            answer += chunk;
+            yield chunk;
+          }
+        } catch (deepseekError) {
+          this.log('агент: DeepSeek тоже не ответил —', deepseekError?.message ?? deepseekError);
+        }
+      }
+
       if (!answer) {
         for await (const chunk of this.streamRules(npc, text, history)) {
           answer += chunk;
@@ -72,6 +132,119 @@ export class AgentRuntime {
     }
 
     this.store.addMemory(npc.id, playerId, 'assistant', answer.trim());
+  }
+
+  /**
+   * Потоковый вызов локальной модели, формат Ollama: `/api/chat`, NDJSON.
+   * Формат ответа — по строке на кусок: {"message":{"content":"…"},"done":false}.
+   */
+  async *streamOllama(messages) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20_000);
+
+    try {
+      const response = await fetch(`${this.localUrl}/api/chat`, {
+        method: 'POST',
+        headers: this.localHeaders,
+        body: JSON.stringify({
+          model: this.localModel,
+          stream: true,
+          messages,
+          options: { temperature: 0.85, num_predict: 120 },
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+
+          let parsed;
+          try {
+            parsed = JSON.parse(trimmed);
+          } catch {
+            continue; // неполная строка — дождёмся следующего куска
+          }
+
+          const piece = parsed?.message?.content;
+          if (piece) yield piece;
+          if (parsed?.done) return;
+        }
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /**
+   * Потоковый вызов OpenAI-совместимого сервера: `/v1/chat/completions`, SSE.
+   * Так отвечают llama.cpp server, LM Studio, vLLM и прочие.
+   */
+  async *streamOpenAI(messages) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20_000);
+
+    try {
+      const response = await fetch(`${this.localUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: this.localHeaders,
+        body: JSON.stringify({
+          model: this.localModel,
+          stream: true,
+          messages,
+          temperature: 0.85,
+          max_tokens: 120,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+
+          const payload = trimmed.slice(5).trim();
+          if (payload === '[DONE]') return;
+
+          try {
+            const parsed = JSON.parse(payload);
+            const piece = parsed?.choices?.[0]?.delta?.content;
+            if (piece) yield piece;
+          } catch {
+            // неполный кусок JSON — пропускаем
+          }
+        }
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   /** Потоковый вызов DeepSeek: SSE-строки вида data: {...}. */

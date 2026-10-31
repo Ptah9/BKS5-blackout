@@ -19,7 +19,7 @@ import { WebSocketServer } from 'ws';
 
 import { Store } from '../db/store.js';
 import { hashPassword, hashToken, newToken, verifyPassword } from './auth.js';
-import { AgentRuntime } from './agent.js';
+import { AgentRuntime, probeLocal } from './agent.js';
 import { Scenario } from './scenario.js';
 import { START_INVENTORY, findRecipe, sanitizeInventory } from '../../shared/items.js';
 import { toRussianName } from '../../shared/translit.js';
@@ -67,9 +67,24 @@ const npcs = JSON.parse(readFileSync(join(ROOT, 'content', 'npcs.json'), 'utf8')
 const agents = new AgentRuntime({
   store,
   key: process.env.DEEPSEEK_API_KEY ?? null,
+  localUrl: process.env.LOCAL_LLM_URL ?? null,
+  localModel: process.env.LOCAL_LLM_MODEL ?? 'qwen2.5:7b-instruct',
+  localFormat: process.env.LOCAL_LLM_FORMAT ?? 'ollama',
+  localKey: process.env.LOCAL_LLM_KEY ?? null,
   log,
 });
-log('агенты:', agents.mode === 'deepseek' ? 'DeepSeek по API' : 'правила (ключа нет)');
+
+// Приоритет мозгов: локальная модель → DeepSeek → правила.
+// Проверяем доступность локальной на старте и говорим вслух, что включилось.
+if (agents.mode === 'local') {
+  probeLocal(agents.localUrl, agents.localModel, agents.localFormat, agents.localKey).then((ok) => {
+    log(ok
+      ? `агенты: локальная модель ${agents.localModel} (${agents.localUrl})`
+      : `агенты: локальная модель недоступна, откат на ${agents.key ? 'DeepSeek' : 'правила'}`);
+  });
+} else {
+  log('агенты:', agents.key ? 'DeepSeek по API' : 'правила (ключа нет)');
+}
 
 // Сценарий читается один раз на старте. Флаги мира живут в базе,
 // поэтому перезапуск сервера не откатывает «найден фонарь» и подобное.
