@@ -116,13 +116,19 @@ async function main(): Promise<void> {
   // Свет в вагоне: 1 — горят лампы, 0 — полный блэкаут.
   // Значение приходит из сценария, поэтому его держим отдельно от рендера.
   let lightsValue = 1;
+  let lastAppliedLights = -1;
+  let lastChunkVersion = -1;
 
   function setLights(value: number): void {
     lightsValue = Math.max(0, Math.min(1, value));
   }
 
   function updateLights(): void {
-    // лампы лежат внутри чанков, поэтому ищем их каждый кадр, а не один раз
+    // пересчитываем только когда изменился свет или загрузился новый чанк
+    if (lightsValue === lastAppliedLights && chunks.version === lastChunkVersion) return;
+    lastAppliedLights = lightsValue;
+    lastChunkVersion = chunks.version;
+
     chunks.group.traverse((node) => {
       if (node.name !== 'lamp') return;
       const mesh = node as THREE.Mesh;

@@ -44,6 +44,17 @@ export class Scenario {
     return this.startedAt !== null;
   }
 
+  /**
+   * Все игроки ушли — сценарий начинается заново для следующего входа,
+   * иначе опоздавший попал бы в середину сюжета.
+   */
+  reset() {
+    this.startedAt = null;
+    this.firedBeats.clear();
+    this.firedTriggers.clear();
+    this.state = { lights: 1, objective: null };
+  }
+
   /** Пробегает по действиям и отправляет те, чьё время пришло. */
   tick(now = Date.now()) {
     if (this.startedAt === null) return;

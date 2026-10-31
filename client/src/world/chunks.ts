@@ -78,9 +78,17 @@ function disposeObject(object: THREE.Object3D): void {
   object.traverse((node) => {
     if (!(node instanceof THREE.Mesh)) return;
     node.geometry.dispose();
-    const material = node.material;
-    if (Array.isArray(material)) material.forEach((m) => m.dispose());
-    else material.dispose();
+
+    const materials = Array.isArray(node.material) ? node.material : [node.material];
+    for (const material of materials) {
+      // у нас текстуры клонируются в tiled(): каждая живёт на GPU отдельно,
+      // поэтому при выгрузке чанка их надо освобождать вместе с материалом
+      for (const key of ['map', 'emissiveMap', 'aoMap', 'normalMap', 'roughnessMap', 'metalnessMap'] as const) {
+        const texture = (material as THREE.MeshStandardMaterial)[key];
+        if (texture) texture.dispose();
+      }
+      material.dispose();
+    }
   });
 }
 
@@ -94,6 +102,9 @@ export interface ChunkStats {
 
 export class ChunkManager {
   readonly group = new THREE.Group();
+
+  /** Меняется при каждой загрузке/выгрузке — по нему main знает, что лампы пересозданы. */
+  version = 0;
 
   private readonly loaded = new Map<string, ChunkContent>();
   private readonly weights = new Map<string, number>();
@@ -171,6 +182,7 @@ export class ChunkManager {
     this.group.add(content.object);
     this.loaded.set(def.id, content);
     this.rebuildCaches();
+    this.version++;
   }
 
   private unload(id: string): void {
@@ -180,6 +192,7 @@ export class ChunkManager {
     disposeObject(content.object);
     this.loaded.delete(id);
     this.rebuildCaches();
+    this.version++;
   }
 
   private rebuildCaches(): void {

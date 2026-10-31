@@ -149,7 +149,29 @@ function bearer(req) {
   return header.startsWith('Bearer ') ? header.slice(7) : null;
 }
 
+const loginRateLimit = new Map();
+
+/** До 12 попыток входа в минуту с одного IP: scrypt иначе можно зафлудить. */
+function isLoginRateLimited(ip) {
+  const now = Date.now();
+  const entry = loginRateLimit.get(ip);
+  if (!entry || now > entry.resetAt) {
+    loginRateLimit.set(ip, { count: 1, resetAt: now + 60_000 });
+    return false;
+  }
+  entry.count++;
+  if (loginRateLimit.size > 10_000) loginRateLimit.clear(); // не копим мёртвые IP
+  return entry.count > 12;
+}
+
 async function handleLogin(req, res) {
+  const ip = req.socket?.remoteAddress ?? 'unknown';
+  if (isLoginRateLimited(ip)) {
+    return json(res, 429, {
+      error: { code: 'too_many_requests', message: 'Слишком много попыток входа, подождите минуту' },
+    });
+  }
+
   let body;
   try {
     body = await readJson(req);
@@ -181,8 +203,21 @@ async function handleLogin(req, res) {
     }
   } else {
     const { hash, salt } = await hashPassword(password);
-    player = store.createPlayer(login, toRussianName(login), hash, salt);
-    log('вход: создан игрок', login, '→', player.name);
+    try {
+      player = store.createPlayer(login, toRussianName(login), hash, salt);
+      log('вход: создан игрок', login, '→', player.name);
+    } catch (insertError) {
+      // параллельный запрос мог создать такого же игрока на секунду раньше
+      player = store.playerByLogin(login);
+      if (!player) {
+        log('вход: ошибка создания игрока —', insertError?.message ?? insertError);
+        return json(res, 500, { error: { code: 'server_error', message: 'ошибка регистрации' } });
+      }
+      const ok = await verifyPassword(password, player.pass_salt, player.pass_hash);
+      if (!ok) {
+        return json(res, 409, { error: { code: 'login_taken', message: 'логин уже занят другим паролем' } });
+      }
+    }
   }
 
   const token = newToken();
@@ -234,11 +269,19 @@ function notFound(res) {
 }
 
 function sendFile(res, file) {
+  const stream = createReadStream(file);
+  stream.on('error', (err) => {
+    log('ошибка отдачи статики:', err.message);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('internal server error');
+    }
+  });
   res.writeHead(200, {
     'Content-Type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
     'Cache-Control': 'no-store',
   });
-  createReadStream(file).pipe(res);
+  stream.pipe(res);
 }
 
 async function handleHttp(req, res) {
@@ -450,8 +493,19 @@ function attachWebSocket(server) {
           const yaw = Number(msg.yaw);
           if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(yaw)) return;
 
-          // защита от телепорта: за один пакет больше двух метров — игнор
-          if (Math.hypot(x - client.x, z - client.z) > 2) return;
+          // защита от телепорта: прыжок больше двух метров — возвращаем игрока
+          // на серверную позицию, иначе клиент продолжит слать дальше и навсегда
+          // разойдётся с остальными
+          if (Math.hypot(x - client.x, z - client.z) > 2) {
+            ws.send(JSON.stringify({
+              t: MSG.SNAPSHOT,
+              you: client.playerId,
+              self: { id: client.playerId, name: client.name, x: client.x, z: client.z, yaw: client.yaw },
+              players: [...clients.values()].map(toView),
+              inventory: client.inventory,
+            }));
+            return;
+          }
 
           const clamped = inWorld(x, z);
           client.x = clamped.x;
@@ -485,6 +539,9 @@ function attachWebSocket(server) {
       if (clients.get(client.playerId) === client) clients.delete(client.playerId);
       store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
       log(`ws: игрок ${client.name} (#${client.playerId}) вышел, код ${code}, ${clients.size} в сети`);
+
+      // все ушли — сценарий начинается заново для следующего входа
+      if (clients.size === 0) scenario.reset();
     });
 
     ws.on('error', (err) => log('ws: ошибка', err.message));
@@ -501,21 +558,31 @@ function sendInventory(ws, slots, text = '') {
 
 /** Отправляем ответ агента по кускам: видно, что он думает, а не молчит. */
 async function respond(ws, client, npc, text) {
+  // если игрок ушёл, пока модель думает, запрос к ней надо оборвать
+  const controller = new AbortController();
+  const onClose = () => controller.abort();
+  ws.once('close', onClose);
+
   try {
     for await (const delta of agents.reply({
       npc,
       playerId: client.playerId,
       playerName: client.name,
       text,
+      signal: controller.signal,
     })) {
-      if (ws.readyState !== ws.OPEN) return;
+      if (ws.readyState !== ws.OPEN || controller.signal.aborted) break;
       ws.send(JSON.stringify({ t: MSG.NPC_REPLY, id: npc.id, delta }));
     }
-    if (ws.readyState === ws.OPEN) {
+    if (ws.readyState === ws.OPEN && !controller.signal.aborted) {
       ws.send(JSON.stringify({ t: MSG.NPC_REPLY, id: npc.id, done: true }));
     }
   } catch (error) {
-    log('агент: сбой ответа —', error?.message ?? error);
+    if (error?.name !== 'AbortError') {
+      log('агент: сбой ответа —', error?.message ?? error);
+    }
+  } finally {
+    ws.off('close', onClose);
   }
 }
 

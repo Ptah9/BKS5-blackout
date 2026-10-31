@@ -75,7 +75,7 @@ export class AgentRuntime {
    * Ответ агента кусками. Вызывающий код просто пишет их клиенту.
    * @param {{ npc: any, playerId: number, playerName: string, text: string }} request
    */
-  async *reply({ npc, playerId, playerName, text }) {
+  async *reply({ npc, playerId, playerName, text, signal = null }) {
     const history = this.store.recentMemory(npc.id, playerId, MEMORY_LIMIT);
 
     this.store.addMemory(npc.id, playerId, 'user', text);
@@ -91,14 +91,14 @@ export class AgentRuntime {
     try {
       if (this.localUrl) {
         const stream = this.localFormat === 'openai'
-          ? this.streamOpenAI(messages)
-          : this.streamOllama(messages);
+          ? this.streamOpenAI(messages, signal)
+          : this.streamOllama(messages, signal);
         for await (const chunk of stream) {
           answer += chunk;
           yield chunk;
         }
       } else if (this.key) {
-        for await (const chunk of this.streamDeepSeek(messages)) {
+        for await (const chunk of this.streamDeepSeek(messages, signal)) {
           answer += chunk;
           yield chunk;
         }
@@ -109,12 +109,13 @@ export class AgentRuntime {
         }
       }
     } catch (error) {
+      if (error?.name === 'AbortError') throw error; // игрока оборвал клиент — не переключаемся
       this.log('агент: модель не ответила, переключаюсь —', error?.message ?? error);
 
       // если локальная не поднялась, пробуем DeepSeek, и только потом правила
       if (!answer && this.localUrl && this.key) {
         try {
-          for await (const chunk of this.streamDeepSeek(messages)) {
+          for await (const chunk of this.streamDeepSeek(messages, signal)) {
             answer += chunk;
             yield chunk;
           }
@@ -134,59 +135,60 @@ export class AgentRuntime {
     this.store.addMemory(npc.id, playerId, 'assistant', answer.trim());
   }
 
+  /** Общий таймаут + внешний сигнал от клиента: прерывает fetch, если игрок ушёл. */
+  makeSignal(external) {
+    if (!external) return { signal: AbortSignal.timeout(20_000) };
+    return { signal: AbortSignal.any([external, AbortSignal.timeout(20_000)]) };
+  }
+
   /**
    * Потоковый вызов локальной модели, формат Ollama: `/api/chat`, NDJSON.
    * Формат ответа — по строке на кусок: {"message":{"content":"…"},"done":false}.
    */
-  async *streamOllama(messages) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20_000);
+  async *streamOllama(messages, signal = null) {
+    const abort = this.makeSignal(signal);
 
-    try {
-      const response = await fetch(`${this.localUrl}/api/chat`, {
-        method: 'POST',
-        headers: this.localHeaders,
-        body: JSON.stringify({
-          model: this.localModel,
-          stream: true,
-          messages,
-          options: { temperature: 0.85, num_predict: 120 },
-        }),
-        signal: controller.signal,
-      });
+    const response = await fetch(`${this.localUrl}/api/chat`, {
+      method: 'POST',
+      headers: this.localHeaders,
+      body: JSON.stringify({
+        model: this.localModel,
+        stream: true,
+        messages,
+        options: { temperature: 0.85, num_predict: 120 },
+      }),
+      signal: abort.signal,
+    });
 
-      if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
 
-          let parsed;
-          try {
-            parsed = JSON.parse(trimmed);
-          } catch {
-            continue; // неполная строка — дождёмся следующего куска
-          }
-
-          const piece = parsed?.message?.content;
-          if (piece) yield piece;
-          if (parsed?.done) return;
+        let parsed;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          continue; // неполная строка — дождёмся следующего куска
         }
+
+        const piece = parsed?.message?.content;
+        if (piece) yield piece;
+        if (parsed?.done) return;
       }
-    } finally {
-      clearTimeout(timeout);
     }
   }
 
@@ -194,114 +196,104 @@ export class AgentRuntime {
    * Потоковый вызов OpenAI-совместимого сервера: `/v1/chat/completions`, SSE.
    * Так отвечают llama.cpp server, LM Studio, vLLM и прочие.
    */
-  async *streamOpenAI(messages) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20_000);
+  async *streamOpenAI(messages, signal = null) {
+    const abort = this.makeSignal(signal);
 
-    try {
-      const response = await fetch(`${this.localUrl}/v1/chat/completions`, {
-        method: 'POST',
-        headers: this.localHeaders,
-        body: JSON.stringify({
-          model: this.localModel,
-          stream: true,
-          messages,
-          temperature: 0.85,
-          max_tokens: 120,
-        }),
-        signal: controller.signal,
-      });
+    const response = await fetch(`${this.localUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: this.localHeaders,
+      body: JSON.stringify({
+        model: this.localModel,
+        stream: true,
+        messages,
+        temperature: 0.85,
+        max_tokens: 120,
+      }),
+      signal: abort.signal,
+    });
 
-      if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data:')) continue;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
 
-          const payload = trimmed.slice(5).trim();
-          if (payload === '[DONE]') return;
+        const payload = trimmed.slice(5).trim();
+        if (payload === '[DONE]') return;
 
-          try {
-            const parsed = JSON.parse(payload);
-            const piece = parsed?.choices?.[0]?.delta?.content;
-            if (piece) yield piece;
-          } catch {
-            // неполный кусок JSON — пропускаем
-          }
+        try {
+          const parsed = JSON.parse(payload);
+          const piece = parsed?.choices?.[0]?.delta?.content;
+          if (piece) yield piece;
+        } catch {
+          // неполный кусок JSON — пропускаем
         }
       }
-    } finally {
-      clearTimeout(timeout);
     }
   }
 
   /** Потоковый вызов DeepSeek: SSE-строки вида data: {...}. */
-  async *streamDeepSeek(messages) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20_000);
+  async *streamDeepSeek(messages, signal = null) {
+    const abort = this.makeSignal(signal);
 
-    try {
-      const response = await fetch('https://api.deepseek.com/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.key}`,
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages,
-          stream: true,
-          temperature: 0.85,
-          max_tokens: 120,
-        }),
-        signal: controller.signal,
-      });
+    const response = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.key}`,
+      },
+      body: JSON.stringify({
+        model: this.model,
+        messages,
+        stream: true,
+        temperature: 0.85,
+        max_tokens: 120,
+      }),
+      signal: abort.signal,
+    });
 
-      if (!response.ok || !response.body) {
-        throw new Error(`HTTP ${response.status}`);
-      }
+    if (!response.ok || !response.body) {
+      throw new Error(`HTTP ${response.status}`);
+    }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data:')) continue;
-          const payload = trimmed.slice(5).trim();
-          if (payload === '[DONE]') return;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const payload = trimmed.slice(5).trim();
+        if (payload === '[DONE]') return;
 
-          try {
-            const parsed = JSON.parse(payload);
-            const delta = parsed.choices?.[0]?.delta?.content;
-            if (delta) yield delta;
-          } catch {
-            // неполный кусок JSON — пропускаем, следующий чанк его дополнит
-          }
+        try {
+          const parsed = JSON.parse(payload);
+          const delta = parsed.choices?.[0]?.delta?.content;
+          if (delta) yield delta;
+        } catch {
+          // неполный кусок JSON — пропускаем, следующий чанк его дополнит
         }
       }
-    } finally {
-      clearTimeout(timeout);
     }
   }
 
@@ -312,49 +304,49 @@ export class AgentRuntime {
     const said = new Set(history.map((row) => row.text.toLowerCase()));
 
     const pick = (variants) => {
-      const fresh = variants.filter((variant) => !said.has(variant.toLowerCase()));
-      return (fresh.length > 0 ? fresh : variants)[Math.floor(Math.random() * (fresh.length || variants.length))];
+    const fresh = variants.filter((variant) => !said.has(variant.toLowerCase()));
+    return (fresh.length > 0 ? fresh : variants)[Math.floor(Math.random() * (fresh.length || variants.length))];
     };
 
     let answer;
 
     if (/свет|темн|фонар/.test(lower)) {
-      answer = pick([
-        'Света нет с самого тоннеля. Только телефоны и остались.',
-        'Фонарь есть у кого-то из пассажиров. Бутылка с водой его разгонит.',
-      ]);
+    answer = pick([
+      'Света нет с самого тоннеля. Только телефоны и остались.',
+      'Фонарь есть у кого-то из пассажиров. Бутылка с водой его разгонит.',
+    ]);
     } else if (/выход|выйти|пути|рельс/.test(lower)) {
-      answer = pick([
-        'На пути нельзя. Там контактный рельс под напряжением.',
-        'Выход есть, но не здесь. И не по путям.',
-      ]);
+    answer = pick([
+      'На пути нельзя. Там контактный рельс под напряжением.',
+      'Выход есть, но не здесь. И не по путям.',
+    ]);
     } else if (/машинист|кабин/.test(lower)) {
-      answer = pick([
-        'Кабина открыта, а машиниста нет. Ищу, куда он делся.',
-        'В кабине пусто. Дверь нараспашку — это меня и насторожило.',
-      ]);
+    answer = pick([
+      'Кабина открыта, а машиниста нет. Ищу, куда он делся.',
+      'В кабине пусто. Дверь нараспашку — это меня и насторожило.',
+    ]);
     } else if (/что.*происход|почему.*встал|случилось/.test(lower)) {
-      answer = pick([
-        'Состав встал, света нет. Дальше только ждать и не паниковать.',
-        'Похоже, обесточило участок. Так бывает, но редко.',
-      ]);
+    answer = pick([
+      'Состав встал, света нет. Дальше только ждать и не паниковать.',
+      'Похоже, обесточило участок. Так бывает, но редко.',
+    ]);
     } else if (/помо|помочь/.test(lower)) {
-      answer = pick([
-        'Помоги людям успокоиться. Это сейчас важнее всего.',
-        'Держи фонарь ровно и говори тише — толпа смотрит на тебя.',
-      ]);
+    answer = pick([
+      'Помоги людям успокоиться. Это сейчас важнее всего.',
+      'Держи фонарь ровно и говори тише — толпа смотрит на тебя.',
+    ]);
     } else {
-      answer = pick([
-        'Не знаю. Но стоять без дела хуже, чем искать.',
-        'Спроси иначе — я не понял.',
-        'Тут темно, а ты спрашиваешь. Давай по делу.',
-      ]);
+    answer = pick([
+      'Не знаю. Но стоять без дела хуже, чем искать.',
+      'Спроси иначе — я не понял.',
+      'Тут темно, а ты спрашиваешь. Давай по делу.',
+    ]);
     }
 
     // отдаём по два-три символа, чтобы клиент показывал поток, а не готовый абзац
     for (let i = 0; i < answer.length; i += 3) {
-      yield answer.slice(i, i + 3);
-      await new Promise((resolve) => setTimeout(resolve, 25));
+    yield answer.slice(i, i + 3);
+    await new Promise((resolve) => setTimeout(resolve, 25));
     }
   }
 }
