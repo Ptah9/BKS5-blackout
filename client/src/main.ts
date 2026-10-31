@@ -8,6 +8,7 @@ import { Player } from './game/player';
 import type { RemotePlayer } from './net/replica';
 import { Inventory } from './game/inventory';
 import { Pulse } from './game/pulse';
+import { CutscenePlayer, type CutsceneData } from './game/cutscene';
 import { Replica } from './net/replica';
 import { Net } from './net/socket';
 import { PostFX } from './render/post';
@@ -37,6 +38,8 @@ declare global {
       scene: THREE.Scene;
       renderer: THREE.WebGLRenderer;
       fps: () => number;
+      cutscene: CutscenePlayer;
+      playCutscene: (id: string) => Promise<void>;
     };
   }
 }
@@ -148,6 +151,41 @@ async function main(): Promise<void> {
     elObjective.classList.remove('hidden');
   }
 
+  /* ── катсцены ─────────────────────────────────────────────────────── */
+
+  const elCutscene = document.getElementById('cutscene') as HTMLElement;
+  const elCutsceneSub = document.getElementById('cutscene-sub') as HTMLElement;
+
+  const cutscene = new CutscenePlayer(camera, {
+    onSubtitle: (text) => {
+      elCutsceneSub.textContent = text;
+      elCutsceneSub.classList.toggle('hidden', !text);
+    },
+    onLights: (value) => setLights(value),
+    onEnd: () => {
+      elCutscene.classList.add('hidden');
+      elCutsceneSub.classList.add('hidden');
+    },
+  });
+
+  async function playCutscene(id: string): Promise<void> {
+    if (cutscene.playing) return;
+
+    try {
+      const response = await fetch(`/api/content/cutscenes/${encodeURIComponent(id)}.json`);
+      if (!response.ok) {
+        console.info('[катсцена] файл не найден:', id);
+        return;
+      }
+      const data = (await response.json()) as CutsceneData;
+      cutscene.start(data);
+      elCutscene.classList.remove('hidden');
+      hud.say('');
+    } catch (error) {
+      console.info('[катсцена] не загрузилась:', id, error);
+    }
+  }
+
   const bounds = {
     minX: -CAR_HALF_WIDTH,
     maxX: CAR_HALF_WIDTH,
@@ -166,6 +204,7 @@ async function main(): Promise<void> {
   /* ── персонажи и разговор ─────────────────────────────────────────── */
 
   const elTalk = document.getElementById('talk') as HTMLElement;
+  const elInteract = document.getElementById('interact') as HTMLElement;
   const elSubtitles = document.getElementById('subtitles') as HTMLElement;
   const elChat = document.getElementById('chat') as HTMLElement;
   const elChatName = document.getElementById('chat-name') as HTMLElement;
@@ -173,6 +212,37 @@ async function main(): Promise<void> {
 
   const npcEntities: RemotePlayer[] = [];
   const npcIds: string[] = [];
+
+  interface PropVerb {
+    id: string;
+    label: string;
+    text: string;
+    flag?: string;
+    value?: boolean;
+    requiresFlag?: string;
+  }
+
+  interface PropView {
+    id: string;
+    name: string;
+    pos: number[];
+    radius: number;
+    verbs: PropVerb[];
+  }
+
+  let worldProps: PropView[] = [];
+  let nearProp: PropView | null = null;
+  let nearPropVerb: PropVerb | null = null;
+
+  // предметы мира (двери, кнопки, люки) приезжают из content/props.json
+  void fetch('/api/content/props.json')
+    .then((response) => (response.ok ? response.json() : null))
+    .then((data: { props?: PropView[] } | null) => {
+      worldProps = data?.props ?? [];
+    })
+    .catch(() => {
+      // без предметов играть можно, просто нечего нажимать
+    });
 
   let nearNpc: RemotePlayer | null = null;
   let talkingTo: RemotePlayer | null = null;
@@ -266,6 +336,12 @@ async function main(): Promise<void> {
         case 'lights':
           setLights(Number(data.value ?? 0));
           return;
+        case 'cutscene':
+          void playCutscene(String(data.id ?? ''));
+          return;
+        case 'prop':
+          hud.say(String(data.text ?? ''), 5);
+          return;
         case 'phone':
           hud.say('На экране — «нет сети».', 4);
           return;
@@ -318,6 +394,11 @@ async function main(): Promise<void> {
   /* ───────────────────────────── кадр ───────────────────────────── */
 
   addEventListener('keydown', (event) => {
+    if (event.code === 'Escape' && cutscene.playing) {
+      cutscene.skip();
+      return;
+    }
+
     if (event.code === 'Escape' && chatOpen) {
       closeChat();
       return;
@@ -325,6 +406,11 @@ async function main(): Promise<void> {
 
     if (event.code === 'KeyT' && !chatOpen) {
       if (nearNpc) openChat(nearNpc);
+      return;
+    }
+
+    if (event.code === 'KeyE' && !chatOpen && !cutscene.playing) {
+      if (nearProp && nearPropVerb) net.interact(nearProp.id, nearPropVerb.id);
       return;
     }
 
@@ -388,7 +474,12 @@ async function main(): Promise<void> {
 
   const loop = startLoop(
     (dt) => {
-      if (!chatOpen) {
+      if (cutscene.playing) {
+        // камера идёт по точкам, а движения мыши за это время не копим,
+        // иначе после сцены камеру дёрнет
+        cutscene.update(dt);
+        input.consumeLook();
+      } else if (!chatOpen) {
         player.update(dt, input, chunks.colliders, bounds);
       }
       chunks.update(player.position.z);
@@ -406,6 +497,42 @@ async function main(): Promise<void> {
       nearNpc = closest;
       elTalk.classList.toggle('hidden', !nearNpc || chatOpen);
       if (nearNpc) elTalk.textContent = `T — поговорить: ${nearNpc.name}`;
+
+      // ближайший предмет, на который смотрит игрок
+      let closestProp: PropView | null = null;
+      let closestVerb: PropVerb | null = null;
+      let bestPropDistance = Infinity;
+
+      const forwardX = -Math.sin(player.facing);
+      const forwardZ = -Math.cos(player.facing);
+
+      for (const prop of worldProps) {
+        const dx = prop.pos[0] - player.position.x;
+        const dz = prop.pos[2] - player.position.z;
+        const distance = Math.hypot(dx, dz);
+        if (distance > prop.radius) continue;
+
+        // проверяем, что игрок смотрит в сторону предмета, а не стоит спиной
+        const dot = (dx * forwardX + dz * forwardZ) / Math.max(0.001, distance);
+        if (dot < 0.35) continue;
+
+        if (distance < bestPropDistance) {
+          bestPropDistance = distance;
+          closestProp = prop;
+        }
+      }
+
+      if (closestProp) {
+        closestVerb = closestProp.verbs.find((verb) => verb.id !== 'look') ?? closestProp.verbs[0];
+      }
+
+      nearProp = closestProp;
+      nearPropVerb = closestVerb;
+
+      elInteract.classList.toggle('hidden', !nearProp || chatOpen);
+      if (nearProp && nearPropVerb) {
+        elInteract.textContent = `E — ${nearPropVerb.label}: ${nearProp.name}`;
+      }
 
       // сообщаем серверу, когда игрок переходит в другую часть мира
       const zone = player.position.z < 0 ? 'car_a' : 'car_b';
@@ -463,7 +590,7 @@ async function main(): Promise<void> {
     elMem.textContent = `${stats.loadedMb} из ${stats.totalMb} МБ · ${stats.loadedPercent}%`;
   }, 500);
 
-  window.__game = { player, camera, scene, renderer, fps: () => loop.fps() };
+  window.__game = { player, camera, scene, renderer, fps: () => loop.fps(), cutscene, playCutscene };
 
   addEventListener('beforeunload', () => {
     loop.stop();

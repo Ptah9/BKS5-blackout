@@ -64,6 +64,8 @@ log('база:', DB_FILE);
 
 // Персонажи и их характеры — в данных, а не в коде сервера.
 const npcs = JSON.parse(readFileSync(join(ROOT, 'content', 'npcs.json'), 'utf8')).npcs;
+// Предметы мира: двери, кнопки, люки — с вербами и условиями.
+const props = JSON.parse(readFileSync(join(ROOT, 'content', 'props.json'), 'utf8')).props;
 const agents = new AgentRuntime({
   store,
   key: process.env.DEEPSEEK_API_KEY ?? null,
@@ -287,6 +289,25 @@ function sendFile(res, file) {
 async function handleHttp(req, res) {
   const url = new URL(req.url, 'http://localhost');
 
+  // содержимое (сценарий, катсцены, персонажи) отдаём из папки content,
+  // чтобы тексты правились без пересборки клиента
+  if (url.pathname.startsWith('/api/content/')) {
+    const CONTENT = join(ROOT, 'content');
+    const relative = decodeURIComponent(url.pathname.slice('/api/content/'.length));
+    const file = normalize(join(CONTENT, relative));
+
+    if (!file.startsWith(CONTENT + sep)) {
+      return json(res, 404, { error: { code: 'not_found', message: 'выход за пределы content' } });
+    }
+    if (!existsSync(file) || !statSync(file).isFile()) {
+      return json(res, 404, { error: { code: 'not_found', message: relative } });
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+    createReadStream(file).pipe(res);
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/login') return handleLogin(req, res);
   if (req.method === 'GET' && url.pathname === '/api/me') return handleMe(req, res);
   if (req.method === 'GET' && url.pathname === '/api/health') {
@@ -466,6 +487,37 @@ function attachWebSocket(server) {
           const chunk = String(msg.chunk ?? '');
           if (!chunk) return;
           scenario.fire('zone', { chunk });
+          return;
+        }
+
+        case MSG.INTERACT: {
+          if (!client) return;
+
+          const prop = props.find((item) => item.id === String(msg.id ?? ''));
+          if (!prop) return;
+
+          const verb = prop.verbs.find((item) => item.id === String(msg.verb ?? ''));
+          if (!verb) return;
+
+          // условие задаётся флагом: например, люк без лома не открыть
+          if (verb.requiresFlag && store.getFlag(verb.requiresFlag) !== '1') {
+            ws.send(JSON.stringify({
+              t: MSG.EVENT,
+              kind: 'prop',
+              data: { id: prop.id, verb: verb.id, text: 'Пока нечем это сделать.' },
+            }));
+            return;
+          }
+
+          if (verb.flag) store.setFlag(verb.flag, verb.value ? '1' : '0');
+
+          log(`игрок ${client.name}: ${prop.id} → ${verb.id}`);
+          ws.send(JSON.stringify({
+            t: MSG.EVENT,
+            kind: 'prop',
+            data: { id: prop.id, verb: verb.id, text: verb.text },
+          }));
+          scenario.fire('interact', { id: prop.id, verb: verb.id });
           return;
         }
 

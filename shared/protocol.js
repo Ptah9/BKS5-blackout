@@ -31,6 +31,8 @@ export const MSG = Object.freeze({
   // агенты
   SAY: 'say',
   NPC_REPLY: 'npc_reply',
+  // предметы мира
+  INTERACT: 'interact',
 });
 
 /** Коды закрытия WebSocket. 4xxx — наши, прикладные. */

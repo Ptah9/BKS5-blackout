@@ -73,6 +73,53 @@ body {
   color: #e9eef6;
 }
 
+/* ── катсцена: полосы и субтитры ─────────────────────────── */
+
+#cutscene {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+#cutscene.hidden {
+  display: none;
+}
+
+#cutscene .bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 11vh;
+  background: #000;
+}
+
+#cutscene .bar.top {
+  top: 0;
+}
+
+#cutscene .bar.bottom {
+  bottom: 0;
+}
+
+#cutscene-sub {
+  position: absolute;
+  left: 50%;
+  bottom: 14vh;
+  transform: translateX(-50%);
+  max-width: min(820px, 86vw);
+  padding: 8px 16px;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 0.55);
+  color: #e8eef7;
+  font-size: 15px;
+  text-align: center;
+}
+
+#cutscene-sub.hidden {
+  display: none;
+}
+
 /* ── HUD: пульс, место, мысли, инвентарь ─────────────────── */
 
 #talk,
@@ -91,6 +138,17 @@ body {
   padding: 6px 12px;
   color: #e9eef6;
   pointer-events: none;
+}
+
+#interact {
+  bottom: 176px;
+  padding: 6px 12px;
+  color: #e9eef6;
+  pointer-events: none;
+}
+
+#interact.hidden {
+  display: none;
 }
 
 #subtitles {

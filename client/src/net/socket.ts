@@ -93,6 +93,12 @@ export class Net {
     this.ws.send(JSON.stringify({ t: MSG.SAY, to: npcId, text }));
   }
 
+  /** Действие с предметом мира: дверь, кнопка, люк. Проверяет сервер. */
+  interact(id: string, verb: string): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.INTERACT, id, verb }));
+  }
+
   ping(): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({ t: MSG.PING, id: ++this.pingId, clientTime: performance.now() }));
