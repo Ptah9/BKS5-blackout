@@ -59,14 +59,14 @@ function ask(npcId, text) {
   });
 }
 
-const first = await ask('obhodchik', 'Что случилось, почему поезд встал?');
+const first = await ask('inspector', 'Что случилось, почему поезд встал?');
 check('агент ответил', first.answer.trim().length > 0, `${first.answer.length} символов`);
 check('ответ закончился сигналом done', first.done === true, first.timeout ? 'таймаут' : '');
 console.log('      ответ:', first.answer.trim().slice(0, 160));
 
 // второй вопрос — проверяем, что модель не отвечает одной и той же фразой
 await new Promise((r) => setTimeout(r, 1400));
-const second = await ask('obhodchik', 'А машинист где?');
+const second = await ask('inspector', 'А машинист где?');
 check('второй ответ тоже не пустой', second.answer.trim().length > 0, `${second.answer.length} символов`);
 check('ответы не совпадают дословно', first.answer.trim() !== second.answer.trim());
 console.log('      ответ:', second.answer.trim().slice(0, 160));

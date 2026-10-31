@@ -156,9 +156,10 @@ export function buildCar(
   for (const zEnd of [-1, 1] as const) {
     const z = zEnd * (CAR_HALF_LENGTH + 0.04);
     push('panel', 0, CAR_HEIGHT / 2, z, 2.7, CAR_HEIGHT, 0.08);
-    // дверь на улицу / в следующий вагон
-    push('panel', 0, 0.95, z - zEnd * 0.05, 0.86, 1.9, 0.06);
-    push('glass', 0, 1.45, z - zEnd * 0.07, 0.34, 0.5, 0.02);
+    // дверь в следующий вагон: сдвинута от стены на 12 см, иначе грани совпадают
+    // и получается z-fighting (шахматка на двери)
+    push('panel', 0, 0.95, z - zEnd * 0.12, 0.86, 1.9, 0.06);
+    push('glass', 0, 1.45, z - zEnd * 0.155, 0.34, 0.5, 0.02);
     // окна по бокам от двери
     for (const x of [-0.85, 0.85]) {
       push('glass', x, 1.55, z - zEnd * 0.06, 0.55, 0.7, 0.02);

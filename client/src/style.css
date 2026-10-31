@@ -123,6 +123,7 @@ body {
 /* ── HUD: пульс, место, мысли, инвентарь ─────────────────── */
 
 #talk,
+#interact,
 #subtitles,
 #chat {
   position: fixed;
@@ -241,6 +242,14 @@ body {
 
 #vitals #v-bpm.high {
   color: #ff7a5f;
+}
+
+#vitals #v-panic.high {
+  color: #ff7a5f;
+}
+
+#vitals #v-trust.high {
+  color: #9fe3a0;
 }
 
 #thought {

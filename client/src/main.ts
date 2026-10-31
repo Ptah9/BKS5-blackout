@@ -16,6 +16,7 @@ import { createEnvironment, createTextures } from './render/textures';
 import { Hud } from './ui/hud';
 import { ensureSession, forgetSession } from './ui/login';
 import { ChunkManager } from './world/chunks';
+import { Passengers, type PassengerSpot } from './world/passengers';
 import { CAR_HALF_LENGTH, CAR_HALF_WIDTH, CAR_HEIGHT } from './world/car';
 
 /**
@@ -40,6 +41,7 @@ declare global {
       fps: () => number;
       cutscene: CutscenePlayer;
       playCutscene: (id: string) => Promise<void>;
+      probe: () => Record<string, unknown>;
     };
   }
 }
@@ -52,9 +54,10 @@ async function main(): Promise<void> {
   const elConn = document.getElementById('s-conn') as HTMLElement;
   const elPing = document.getElementById('s-ping') as HTMLElement;
   const elFps = document.getElementById('s-fps') as HTMLElement;
-  const elName = document.getElementById('s-name') as HTMLElement;
-  const elChunks = document.getElementById('s-chunks') as HTMLElement;
+  const elName = document.getElementById('s-name') as HTMLElement;  const elChunks = document.getElementById('s-chunks') as HTMLElement;
   const elMem = document.getElementById('s-mem') as HTMLElement;
+  const elPanic = document.getElementById('v-panic') as HTMLElement;
+  const elTrust = document.getElementById('v-trust') as HTMLElement;
   const elStatus = document.getElementById('status') as HTMLElement;
   const elHint = document.getElementById('hint') as HTMLElement;
   const elObjective = document.getElementById('objective') as HTMLElement;
@@ -85,6 +88,18 @@ async function main(): Promise<void> {
   const textures = createTextures();
   const chunks = new ChunkManager(textures);
   scene.add(chunks.group);
+
+  // Пассажиры: пока силуэты, потом сюда встанут модели. Расстановка в данных.
+  void fetch('/api/content/passengers.json')
+    .then((response) => (response.ok ? response.json() : null))
+    .then((data: { spots?: PassengerSpot[] } | null) => {
+      const spots = data?.spots ?? [];
+      if (spots.length === 0) return;
+      scene.add(new Passengers(spots).group);
+    })
+    .catch(() => {
+      // без пассажиров играется, просто вагон пустой
+    });
 
   const remotePlayers = new RemotePlayers();
   scene.add(remotePlayers.group);
@@ -149,6 +164,14 @@ async function main(): Promise<void> {
     }
     elObjective.textContent = text;
     elObjective.classList.remove('hidden');
+  }
+
+  /** Паника и доверие приходят с сервера: это состояние мира, а не клиента. */
+  function setStats(panic: number, trust: number): void {
+    elPanic.textContent = String(panic);
+    elTrust.textContent = String(trust);
+    elPanic.classList.toggle('high', panic >= 65);
+    elTrust.classList.toggle('high', trust >= 65);
   }
 
   /* ── катсцены ─────────────────────────────────────────────────────── */
@@ -342,6 +365,9 @@ async function main(): Promise<void> {
         case 'prop':
           hud.say(String(data.text ?? ''), 5);
           return;
+        case 'stats':
+          setStats(Number(data.panic ?? 0), Number(data.trust ?? 0));
+          return;
         case 'phone':
           hud.say('На экране — «нет сети».', 4);
           return;
@@ -512,9 +538,10 @@ async function main(): Promise<void> {
         const distance = Math.hypot(dx, dz);
         if (distance > prop.radius) continue;
 
-        // проверяем, что игрок смотрит в сторону предмета, а не стоит спиной
+        // проверяем, что игрок смотрит в сторону предмета, а не стоит спиной:
+        // порог мягкий, иначе подсказка не появляется при взгляде чуть вбок
         const dot = (dx * forwardX + dz * forwardZ) / Math.max(0.001, distance);
-        if (dot < 0.35) continue;
+        if (dot < 0.15) continue;
 
         if (distance < bestPropDistance) {
           bestPropDistance = distance;
@@ -590,7 +617,35 @@ async function main(): Promise<void> {
     elMem.textContent = `${stats.loadedMb} из ${stats.totalMb} МБ · ${stats.loadedPercent}%`;
   }, 500);
 
-  window.__game = { player, camera, scene, renderer, fps: () => loop.fps(), cutscene, playCutscene };
+  window.__game = {
+    player,
+    camera,
+    scene,
+    renderer,
+    fps: () => loop.fps(),
+    cutscene,
+    playCutscene,
+    // отладка: посчитать ближайший предмет и персонажа без ожидания кадров
+    probe: () => {
+      const forwardX = -Math.sin(player.facing);
+      const forwardZ = -Math.cos(player.facing);
+      const props = worldProps.map((prop) => {
+        const dx = prop.pos[0] - player.position.x;
+        const dz = prop.pos[2] - player.position.z;
+        const distance = Math.hypot(dx, dz);
+        const dot = (dx * forwardX + dz * forwardZ) / Math.max(0.001, distance);
+        return { id: prop.id, distance: +distance.toFixed(2), dot: +dot.toFixed(2), inRadius: distance <= prop.radius };
+      });
+      return {
+        position: player.position.toArray().map((n) => +n.toFixed(2)),
+        facing: +player.facing.toFixed(2),
+        propsLoaded: worldProps.length,
+        props,
+        nearProp: nearProp?.id ?? null,
+        nearPropVerb: nearPropVerb?.id ?? null,
+      };
+    },
+  };
 
   addEventListener('beforeunload', () => {
     loop.stop();

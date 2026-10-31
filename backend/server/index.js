@@ -64,8 +64,42 @@ log('база:', DB_FILE);
 
 // Персонажи и их характеры — в данных, а не в коде сервера.
 const npcs = JSON.parse(readFileSync(join(ROOT, 'content', 'npcs.json'), 'utf8')).npcs;
-// Предметы мира: двери, кнопки, люки — с вербами и условиями.
+  // Предметы мира: двери, кнопки, люки — с вербами и условиями.
 const props = JSON.parse(readFileSync(join(ROOT, 'content', 'props.json'), 'utf8')).props;
+
+/**
+ * Два числа, которые двигают сюжет: паника и доверие (0–100).
+ * Живут в базе, чтобы перезапуск сервера не обнулял состояние толпы.
+ */
+const stats = {
+  panic: Number(store.getFlag('panic') ?? 20),
+  trust: Number(store.getFlag('trust') ?? 50),
+};
+
+/** Рассылка события всем подключённым; действия со статистикой не пересылаются. */
+function broadcast(event) {
+  if (event.kind === 'stat') {
+    changeStat(event.data.key, event.data.delta);
+    return;
+  }
+
+  const payload = JSON.stringify({ t: MSG.EVENT, kind: event.kind, data: event.data });
+  for (const client of clients.values()) {
+    if (client.ws.readyState === client.ws.OPEN) client.ws.send(payload);
+  }
+}
+
+function changeStat(key, delta) {
+  if (key !== 'panic' && key !== 'trust') return;
+
+  const next = Math.max(0, Math.min(100, Math.round(stats[key] + Number(delta ?? 0))));
+  if (next === stats[key]) return;
+
+  stats[key] = next;
+  store.setFlag(key, next);
+  log(`мир: ${key} → ${next}`);
+  broadcast({ kind: 'stats', data: { panic: stats.panic, trust: stats.trust } });
+}
 const agents = new AgentRuntime({
   store,
   key: process.env.DEEPSEEK_API_KEY ?? null,
@@ -93,12 +127,7 @@ if (agents.mode === 'local') {
 const scenario = Scenario.load(join(ROOT, 'content', 'scenario', 'metro_tunnel.json'), {
   store,
   log,
-  broadcast(event) {
-    const payload = JSON.stringify({ t: MSG.EVENT, kind: event.kind, data: event.data });
-    for (const client of clients.values()) {
-      if (client.ws.readyState === client.ws.OPEN) client.ws.send(payload);
-    }
-  },
+  broadcast,
 });
 
 /* ───────────────────────────── HTTP ───────────────────────────── */
@@ -443,6 +472,12 @@ function attachWebSocket(server) {
           for (const event of scenario.stateEvents()) {
             ws.send(JSON.stringify({ t: MSG.EVENT, kind: event.kind, data: event.data }));
           }
+          // и текущее состояние толпы
+          ws.send(JSON.stringify({
+            t: MSG.EVENT,
+            kind: 'stats',
+            data: { panic: stats.panic, trust: stats.trust },
+          }));
           return;
         }
 
@@ -478,6 +513,9 @@ function attachWebSocket(server) {
           if (recipe.result === 'flashlight') {
             store.setFlag('has_light', '1');
             scenario.fire('flag', { flag: 'has_light' });
+            // свет успокаивает толпу и добавляет доверия к тому, кто его нашёл
+            changeStat('panic', -8);
+            changeStat('trust', 4);
           }
           return;
         }
@@ -510,6 +548,9 @@ function attachWebSocket(server) {
           }
 
           if (verb.flag) store.setFlag(verb.flag, verb.value ? '1' : '0');
+
+          // открытая дверь кабины пугает: там никого нет, и это заметно
+          if (verb.id === 'open') changeStat('panic', 4);
 
           log(`игрок ${client.name}: ${prop.id} → ${verb.id}`);
           ws.send(JSON.stringify({
@@ -592,8 +633,14 @@ function attachWebSocket(server) {
       store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
       log(`ws: игрок ${client.name} (#${client.playerId}) вышел, код ${code}, ${clients.size} в сети`);
 
-      // все ушли — сценарий начинается заново для следующего входа
-      if (clients.size === 0) scenario.reset();
+      // все ушли — сценарий и состояние толпы начинаются заново
+      if (clients.size === 0) {
+        scenario.reset();
+        stats.panic = 20;
+        stats.trust = 50;
+        store.setFlag('panic', 20);
+        store.setFlag('trust', 50);
+      }
     });
 
     ws.on('error', (err) => log('ws: ошибка', err.message));
@@ -622,6 +669,14 @@ async function respond(ws, client, npc, text) {
       playerName: client.name,
       text,
       signal: controller.signal,
+      onResult: (answer) => {
+        // числа из ответа агента меняют состояние мира — это его влияние на толпу
+        if (answer.trustDelta) changeStat('trust', answer.trustDelta);
+        if (answer.panicDelta) changeStat('panic', answer.panicDelta);
+        if (answer.actionFlag && answer.actionFlag !== 'none') {
+          log(`агент ${npc.id}: ${answer.actionFlag}`);
+        }
+      },
     })) {
       if (ws.readyState !== ws.OPEN || controller.signal.aborted) break;
       ws.send(JSON.stringify({ t: MSG.NPC_REPLY, id: npc.id, delta }));
