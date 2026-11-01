@@ -11,6 +11,7 @@ import * as THREE from 'three';
 
 import type { RemotePlayer } from '../net/replica';
 import type { Characters, CharacterId } from '../world/characters';
+import { CharacterIdle } from '../world/characterAnim';
 
 interface Entry {
   root: THREE.Group;
@@ -19,6 +20,8 @@ interface Entry {
   /** Капсула вместо модели: заменим, как только модель загрузится. */
   fallback: boolean;
   modelId: CharacterId;
+  /** Процедурное «дыхание»: у ригованных моделей нет клипов. */
+  idle: CharacterIdle | null;
 }
 
 /** Живым игрокам — одна общая модель; всё именное закреплено за агентами. */
@@ -81,7 +84,7 @@ export class RemotePlayers {
     // пока загружаются модели — подпись над капсулой никому не мешает
   }
 
-  update(players: readonly RemotePlayer[]): void {
+  update(players: readonly RemotePlayer[], dt = 0): void {
     const seen = new Set<number>();
 
     for (const player of players) {
@@ -104,6 +107,7 @@ export class RemotePlayers {
       // у агента yaw из данных («лицом в проход»), у живого игрока — как у камеры:
       // модели собраны лицом в +Z, поэтому игроку нужен разворот на пол-оборота
       entry.root.rotation.y = (player.model ? player.yaw : player.yaw + Math.PI) + this.turnOffset;
+      entry.idle?.update(dt);
     }
 
     for (const [id, entry] of this.entries) {
@@ -142,7 +146,14 @@ export class RemotePlayers {
     root.add(sprite);
     this.group.add(root);
 
-    return { root, label: sprite, labelTexture: texture, fallback: model === null, modelId };
+    return {
+      root,
+      label: sprite,
+      labelTexture: texture,
+      fallback: model === null,
+      modelId,
+      idle: model ? new CharacterIdle(model, Math.random()) : null,
+    };
   }
 
   private drop(id: number, entry: Entry): void {

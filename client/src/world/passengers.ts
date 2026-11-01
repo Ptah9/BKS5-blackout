@@ -12,6 +12,7 @@
 import * as THREE from 'three';
 
 import type { Characters, CharacterId } from './characters';
+import { CharacterIdle } from './characterAnim';
 
 export interface PassengerSpot {
   x: number;
@@ -39,6 +40,7 @@ export class Passengers {
   seatUp = 0.06;
 
   private readonly seated: Array<{ object: THREE.Object3D; x: number; z: number; yaw: number }> = [];
+  private readonly idles: CharacterIdle[] = [];
 
   constructor(spots: readonly PassengerSpot[], characters: Characters | null) {
     this.group.name = 'passengers';
@@ -66,6 +68,8 @@ export class Passengers {
       model.userData.baseYaw = spot.yaw;
       model.rotation.y = spot.yaw;
       this.group.add(model);
+      // пассажир не статуя: голова поворачивается, спина дышит
+      this.idles.push(new CharacterIdle(model, (index * 0.37) % 1));
 
       if (spot.pose === 'sit') {
         this.seated.push({ object: model, x: spot.x, z: spot.z, yaw: spot.yaw });
@@ -114,6 +118,11 @@ export class Passengers {
 
     group.add(body, head);
     return group;
+  }
+
+  /** Оживить пассажиров: вызывается из общего цикла кадров. */
+  update(dt: number): void {
+    for (const idle of this.idles) idle.update(dt);
   }
 
   dispose(): void {

@@ -11,6 +11,7 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 
 /** Имя модели → файл. Имена короткие: так они же лежат в данных сценария. */
 const FILES = {
@@ -69,9 +70,11 @@ export class Characters {
     return this.prototypes.has(id);
   }
 
-  /** Копия модели. Геометрия и материал общие — это не утечка, а экономия. */
+  /** Копия модели. Геометрия и материал общие — это не утечка, а экономия.
+   *  Скелет копируется отдельно: обычный clone() дал бы общую ссылку
+   *  на кости, и все персонажи дёргались бы синхронно. */
   create(id: CharacterId): THREE.Object3D | null {
     const prototype = this.prototypes.get(id);
-    return prototype ? prototype.clone(true) : null;
+    return prototype ? cloneSkeleton(prototype) : null;
   }
 }

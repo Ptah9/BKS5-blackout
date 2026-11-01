@@ -1012,7 +1012,8 @@ async function main(): Promise<void> {
         cabDoorHinge.rotation.y = Math.max(-1.9, cabDoorHinge.rotation.y - frameDt * 2.2);
       }
 
-      remotePlayers.update([...replica.step(frameDt, now), ...npcEntities]);
+      remotePlayers.update([...replica.step(frameDt, now), ...npcEntities], frameDt);
+      passengers?.update(frameDt);
 
       if (subtitleTimer > 0) {
         subtitleTimer -= frameDt;
