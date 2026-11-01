@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][string]$Path)
+﻿param([Parameter(Mandatory = $true)][string]$Path)
 
 # Fix double-encoded Russian text in a file.
 # Cause: a UTF-8 file was read as cp1251 and written back as UTF-8, so
