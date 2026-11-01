@@ -114,9 +114,7 @@ function stepVents(time: number): void {
 /* ─────────────────────────── дверь кабины ─────────────────────────── */
 
 const cabDoor = { value: 0, target: 0 };
-let cabDoorPivot: THREE.Group | null = null;
-/** Знак хода створки: боковая дверь кабины открывается в другую сторону. */
-let cabDoorSign = 1;
+const cabDoorPivots: Array<{ pivot: THREE.Group; sign: number }> = [];
 let cabDoorBox: Box2 | null = null;
 let cabDoorTween: number | null = null;
 let cabDoorLast = 0;
@@ -130,7 +128,12 @@ const CAB_DOOR_BLOCK = {
 };
 
 function applyCabDoor(): void {
-  if (cabDoorPivot) cabDoorPivot.rotation.y = cabDoor.value * CAB_DOOR_ANGLE * cabDoorSign;
+  for (let i = cabDoorPivots.length - 1; i >= 0; i--) {
+    if (!cabDoorPivots[i].pivot.parent) cabDoorPivots.splice(i, 1);
+  }
+  for (const entry of cabDoorPivots) {
+    entry.pivot.rotation.y = cabDoor.value * CAB_DOOR_ANGLE * entry.sign;
+  }
 
   const box = cabDoorBox;
   if (!box) return;
@@ -149,15 +152,15 @@ function applyCabDoor(): void {
   }
 }
 
-/** Живая створка двери кабины: её строит cab.ts и отдаёт сюда на анимацию. */
+/** Живая створка двери из вагона — первая зарегистрированная. */
 export function cabDoorLeaf(): THREE.Group | null {
-  return cabDoorPivot;
+  return cabDoorPivots[0]?.pivot ?? null;
 }
 
-/** Кабина регистрирует свою боковую дверь: car.ts крутит её по флагу. */
+/** Створки кабины (из вагона и боковая) крутятся по одному флагу cab_open. */
 export function registerCabDoorPivot(pivot: THREE.Group | null, sign = 1): void {
-  cabDoorPivot = pivot;
-  cabDoorSign = sign;
+  if (!pivot) return;
+  cabDoorPivots.push({ pivot, sign });
   applyCabDoor();
 }
 
@@ -268,6 +271,8 @@ export function buildCar(
     /** Форточка: светлый металл, чтобы её было видно в темноте. */
     vent: new THREE.MeshStandardMaterial({ color: 0xc7ced3, roughness: 0.45, metalness: 0.5 }),
     cabDoor: new THREE.MeshStandardMaterial({ color: 0x8d949b, roughness: 0.5, metalness: 0.25 }),
+    /** Ночной тоннель за форточкой: почти чёрная плоскость без бликов. */
+    night: new THREE.MeshBasicMaterial({ color: 0x04060a }),
     ventGlass: new THREE.MeshStandardMaterial({
       color: 0x40525e,
       roughness: 0.12,
@@ -292,6 +297,7 @@ export function buildCar(
     ventGlass: [],
     // створка двери кабины — отдельный меш, бакет только для типа
     cabDoor: [],
+    night: [],
   };
 
   const colliders: Box2[] = [];
@@ -347,6 +353,38 @@ export function buildCar(
         sy: 0.05,
         sz: 0.05,
       });
+
+      // створка двери из вагона в кабину: на петлях у левого края проёма,
+      // открывается внутрь кабины по флагу cab_open
+      if (z >= zFrom && z < zTo) {
+        const pivot = new THREE.Group();
+        pivot.name = 'cabBackDoor';
+        pivot.position.set(-CAB_DOOR_HALF, 0, z + 0.08);
+
+        const leaf = new THREE.Mesh(
+          new THREE.BoxGeometry(CAB_DOOR_HALF * 2, CAB_DOOR_HEIGHT, 0.045),
+          materials.cabDoor,
+        );
+        leaf.position.set(CAB_DOOR_HALF, CAB_DOOR_HEIGHT / 2, 0);
+        leaf.castShadow = true;
+
+        const window = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.5, 0.01), materials.glass);
+        window.position.set(CAB_DOOR_HALF, 1.5, -0.028);
+
+        const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.16, 8), materials.chrome);
+        handle.rotation.x = Math.PI / 2;
+        handle.position.set(CAB_DOOR_HALF * 2 - 0.1, 1.02, -0.05);
+
+        pivot.add(leaf, window, handle);
+        group.add(pivot);
+        registerCabDoorPivot(pivot, 1);
+
+        // пока створка закрыта, проём перекрыт
+        const box: Box2 = { ...CAB_DOOR_BLOCK };
+        colliders.push(box);
+        cabDoorBox = box;
+        applyCabDoor();
+      }
 
       continue;
     }
@@ -437,6 +475,19 @@ export function buildCar(
         );
         sashPane.position.set(-side * 0.022, -sashH / 2, 0);
         pivot.add(sashFrame, sashPane);
+
+        // За проёмом — темнота: иначе в открытой створке видно жёлтое полотно
+        // двери. Плоскость на 1.5 см позади стекла, между стеклом (1.285)
+        // и полотном (1.320); пока створка закрыта, её закрывает само стекло.
+        const night = new THREE.Mesh(
+          new THREE.PlaneGeometry(VENT_HALF_W * 2 - 0.02, height - 0.02),
+          materials.night,
+        );
+        night.name = 'ventNight';
+        night.position.set(glassX - side * 0.015, (VENT_TOP + VENT_BOTTOM) / 2, z);
+        night.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+        group.add(night);
+
         group.add(pivot);
         vents.push({ pivot, side, value: 0, target: 0 });
       }

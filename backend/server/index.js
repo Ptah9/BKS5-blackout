@@ -274,7 +274,7 @@ function startRadio({ text }) {
     }
 
     if (repeat === 4) {
-      changeStat('panic', 12);
+      changeStat('panic', 8);
       // толпа поняла, что машинист сам не выйдет: с этого момента паника
       // растёт сама, пока её не сбьют бумажкой, тангентой и словами
       store.setFlag('panic_running', '1');
@@ -1541,7 +1541,8 @@ setInterval(() => {
   if (!scenario.running || clients.size === 0) return;
   if (store.getFlag('panic_running') !== '1') return;
 
-  let rate = 1;
+  // базовый рост вдвое медленнее: +1 раз в 6 секунд, а не в 3
+  let rate = 0.5;
   if (store.getFlag('cab_papered') === '1') rate *= 0.6;
   if (store.getFlag('announcer_off') === '1') rate *= 0.5;
   if (store.getFlag('crowd_calmed') === '1') rate = 0;

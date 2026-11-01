@@ -191,12 +191,8 @@ export function buildCab(textures: Textures): Location {
 
   /* ── проём в тоннель ───────────────────────────────────────────────── */
   // Дверь в переднем торце убрана: двери в начале поезда не бывает.
-  // Остаётся открытый проём — это путь наружу, но не створка.
-
-  // наличник проёма в тоннель
-  darkBox.span(FRONT_DOOR.minX - 0.04, FRONT_DOOR.minX, 0, FRONT_DOOR.height + 0.04, zf - 0.05, zf + 0.05);
-  darkBox.span(FRONT_DOOR.maxX, FRONT_DOOR.maxX + 0.04, 0, FRONT_DOOR.height + 0.04, zf - 0.05, zf + 0.05);
-  darkBox.span(FRONT_DOOR.minX - 0.04, FRONT_DOOR.maxX + 0.04, FRONT_DOOR.height, FRONT_DOOR.height + 0.04, zf - 0.05, zf + 0.05);
+  // Остаётся голый проём — служебный лаз в тоннель, без наличника, петель
+  // и ручки, чтобы он не читался как вторая дверь.
 
   /* ── пульт ─────────────────────────────────────────────────────────── */
 

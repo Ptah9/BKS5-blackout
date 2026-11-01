@@ -15,6 +15,10 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 interface ItemModel {
   file: string;
+  /** Свой цвет вместо текстуры из файла: у аптечки атлас нечитаемый. */
+  plain?: number;
+  /** Добавить красный крест на лицевую грань. */
+  cross?: boolean;
   /** Сдвиг модели в мире: чтобы не вставала в стену. */
   offset?: [number, number, number];
   /** Множитель к метрам из glb, если автор нарисовал не в масштабе. */
@@ -26,7 +30,7 @@ const ITEMS: Record<string, ItemModel> = {
   // в кабине
   cab_paper: { file: 'drawing.glb' },
   paper: { file: 'drawing.glb' },
-  cab_medkit: { file: 'medkit.glb', scale: 2.2, offset: [-0.12, 0, 0] },
+  cab_medkit: { file: 'medkit.glb', scale: 2.2, offset: [-0.2, 0, 0], plain: 0xd8dde2, cross: true },
   cab_voltmeter: { file: 'voltmeter.glb' },
   cab_tube: { file: 'tube.glb', scale: 0.75 },
   cab_pencil: { file: 'pencil.glb' },
@@ -37,7 +41,7 @@ const ITEMS: Record<string, ItemModel> = {
   phone: { file: 'phone.glb' },
   flashlight: { file: 'flashlight.glb' },
   candy: { file: 'candy.glb' },
-  medkit: { file: 'medkit.glb', scale: 2.2 },
+  medkit: { file: 'medkit.glb', scale: 2.2, plain: 0xd8dde2, cross: true },
   voltmeter: { file: 'voltmeter.glb' },
   tube: { file: 'tube.glb', scale: 0.75 },
   pencil: { file: 'pencil.glb' },
@@ -91,6 +95,32 @@ function swapIn(group: THREE.Group, entry: ItemModel): void {
     if (!scene) return;
     const model = scene.clone(true);
     model.scale.setScalar(entry.scale ?? 1);
+
+    if (entry.plain !== undefined) {
+      // текстура из файла нечитаемая (тёмный атлас с красной полосой):
+      // шахматка и грязные пятна в кадре хуже простого цвета
+      const flat = new THREE.MeshStandardMaterial({ color: entry.plain, roughness: 0.6 });
+      model.traverse((node) => {
+        if (node instanceof THREE.Mesh) node.material = flat;
+      });
+    }
+
+    if (entry.cross) {
+      const red = new THREE.MeshStandardMaterial({ color: 0xb3262d, roughness: 0.7 });
+      const size = new THREE.Vector3();
+      new THREE.Box3().setFromObject(model).getSize(size);
+      // крест на грани, которая смотрит в кабину: аптечка висит на правой
+      // стене, поэтому лицевая грань — минус X
+      const barW = Math.max(0.02, size.z * 0.14);
+      const barH = Math.max(0.02, size.y * 0.4);
+      const face = -size.x / 2 - 0.004;
+      const meshV = new THREE.Mesh(new THREE.BoxGeometry(0.006, barH, barW), red);
+      const meshH = new THREE.Mesh(new THREE.BoxGeometry(0.006, barW, barH), red);
+      meshV.position.set(face, size.y / 2, 0);
+      meshH.position.set(face, size.y / 2, 0);
+      model.add(meshV, meshH);
+    }
+
     if (entry.offset) model.position.set(entry.offset[0], entry.offset[1], entry.offset[2]);
     group.clear();
     group.add(model);

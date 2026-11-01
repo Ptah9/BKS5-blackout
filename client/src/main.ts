@@ -360,12 +360,34 @@ async function main(): Promise<void> {
   /** Паника мира: голоса персонажей злее, когда всем страшно. */
   let worldPanic = 20;
 
+  /** Порог, на котором толпа замолкает совсем. */
+  const CROWD_SILENT_PANIC = 30;
+  /** Прошлая паника: по ней ловим именно переход через порог вниз. */
+  let lastPanicForVoice: number | null = null;
+
+  /**
+   * Шёпот толпы по панике. До 30 и ниже — полная тишина без слышимого хвоста
+   * (гасим дорожку за 0.05 с), выше — обычная громкость от паники.
+   */
+  function applyCrowdVoice(panic: number): void {
+    if (panic <= CROWD_SILENT_PANIC) {
+      soundscape.setChannelScale('whisper', 0, 0.05);
+      if (lastPanicForVoice !== null && lastPanicForVoice > CROWD_SILENT_PANIC) {
+        // один раз на переход, а не на каждом тике stats
+        hud.say('Вагон затихает. Люди смотрят на тебя.', 6);
+      }
+    } else {
+      soundscape.setPanic(panic);
+    }
+    lastPanicForVoice = panic;
+  }
+
   /** Паника, доверие и воздух приходят с сервера: это состояние мира. */
   let lastTrust = 50;
   function setStats(panic: number, trust: number, air: number): void {
     worldPanic = panic;
     lastTrust = trust;
-    soundscape.setPanic(panic);
+    applyCrowdVoice(panic);
     hud.setAnnounceGoal(announceMode, panic, trust);
     elPanic.textContent = String(panic);
     elTrust.textContent = String(trust);
@@ -541,6 +563,8 @@ async function main(): Promise<void> {
             elPhone.classList.add('hidden');
             elPhone.classList.remove('lowered');
             elPhoneNet.classList.add('hidden');
+            // рука исчезает ровно вместе с телефоном, а не в конце сцены
+            viewHand.holdPhone(false);
             return;
         }
       },
