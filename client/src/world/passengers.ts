@@ -1,14 +1,17 @@
 /**
  * Пассажиры в вагоне.
  *
- * Пока это низкополигональные силуэты: торс, голова, у сидящих — на сиденье.
- * Задача — чтобы вагон не выглядел пустым, пока делаются модели. Когда придут
- * .glb, здесь меняется только сборка меша, расстановка останется в данных.
+ * Модели — из charachters/*.glb: сидящие ставятся одной позой, стоящие
+ * берутся из небольшого пула, чтобы вагон не выглядел клонированным.
+ * Расстановка остаётся в данных (content/passengers.json), здесь только сборка.
  *
- * Всё ставится инстансами: два вызова отрисовки на весь вагон, а не сорок.
+ * Если модель не загрузилась, ставим прежний силуэт: пустой вагон хуже,
+ * чем грубый.
  */
 
 import * as THREE from 'three';
+
+import type { Characters, CharacterId } from './characters';
 
 export interface PassengerSpot {
   x: number;
@@ -18,108 +21,104 @@ export interface PassengerSpot {
   coat?: string;
 }
 
+/** Кто из стоящих стоит в проходе: только обезличенная модель, чтобы не
+ *  плодить двойников агентов (Максим Игоревич, Учительница и прочие — по одному). */
+const STANDING_POOL: CharacterId[] = ['stand'];
+
+/** Силуэт-заглушка: тот же разворот, что у моделей. */
+const SILHOUETTE_FACING = 0;
+
 const SKIN = 0x9a7358;
 
 export class Passengers {
   readonly group = new THREE.Group();
+  /** Общий доворот всех фигур в радианах: для подгонки на глаз. */
+  turnOffset = 0;
+  /** Сдвиг сидящих: чуть вперёд к проходу и чуть вверх с сиденья, метры. */
+  seatForward = 0.5;
+  seatUp = 0.06;
 
-  constructor(spots: readonly PassengerSpot[]) {
+  private readonly seated: Array<{ object: THREE.Object3D; x: number; z: number; yaw: number }> = [];
+
+  constructor(spots: readonly PassengerSpot[], characters: Characters | null) {
     this.group.name = 'passengers';
 
-    const seated = spots.filter((spot) => spot.pose === 'sit');
-    const standing = spots.filter((spot) => spot.pose === 'stand');
-
-    this.buildSeated(seated);
-    this.buildStanding(standing);
-  }
-
-  private buildSeated(spots: readonly PassengerSpot[]): void {
-    if (spots.length === 0) return;
-
-    // торс сидящего: чуть наклонён к проходу, поэтому просто коробка на сиденье
-    const torsoGeo = new THREE.BoxGeometry(0.42, 0.62, 0.34);
-    const torsoMat = new THREE.MeshStandardMaterial({ roughness: 0.92, metalness: 0.02 });
-    const torsos = new THREE.InstancedMesh(torsoGeo, torsoMat, spots.length);
-    torsos.castShadow = true;
-    torsos.receiveShadow = true;
-
-    const headGeo = new THREE.SphereGeometry(0.115, 7, 5);
-    const headMat = new THREE.MeshStandardMaterial({ color: SKIN, roughness: 0.85 });
-    const heads = new THREE.InstancedMesh(headGeo, headMat, spots.length);
-
-    const matrix = new THREE.Matrix4();
-    const position = new THREE.Vector3();
-    const quaternion = new THREE.Quaternion();
-    const scale = new THREE.Vector3(1, 1, 1);
-    const color = new THREE.Color();
-
     spots.forEach((spot, index) => {
-      quaternion.setFromEuler(new THREE.Euler(0, spot.yaw, 0));
+      const id: CharacterId = spot.pose === 'sit' ? 'sidit' : STANDING_POOL[index % STANDING_POOL.length];
+      const model = characters?.create(id) ?? null;
 
-      position.set(spot.x, 0.78, spot.z);
-      matrix.compose(position, quaternion, scale);
-      torsos.setMatrixAt(index, matrix);
-      torsos.setColorAt(index, color.set(spot.coat ?? '#4a5568'));
+      if (!model) {
+        const silhouette = this.silhouette(spot);
+        silhouette.userData.baseYaw = spot.yaw + SILHOUETTE_FACING;
+        silhouette.position.set(spot.x, 0, spot.z);
+        this.group.add(silhouette);
+        if (spot.pose === 'sit') {
+          this.seated.push({ object: silhouette, x: spot.x, z: spot.z, yaw: spot.yaw });
+        }
+        return;
+      }
 
-      position.set(spot.x, 1.17, spot.z);
-      matrix.compose(position, quaternion, scale);
-      heads.setMatrixAt(index, matrix);
+      // рост ±5%: иначе двадцать одинаковых фигур читаются как копипаста
+      const scale = 0.96 + ((index * 7) % 9) * 0.011;
+      model.scale.setScalar(scale);
+      model.position.set(spot.x, 0, spot.z);
+      // модели собраны лицом в +Z, yaw в данных — «лицом в проход»
+      model.userData.baseYaw = spot.yaw;
+      model.rotation.y = spot.yaw;
+      this.group.add(model);
+
+      if (spot.pose === 'sit') {
+        this.seated.push({ object: model, x: spot.x, z: spot.z, yaw: spot.yaw });
+      }
     });
 
-    torsos.instanceMatrix.needsUpdate = true;
-    if (torsos.instanceColor) torsos.instanceColor.needsUpdate = true;
-    heads.instanceMatrix.needsUpdate = true;
-
-    this.group.add(torsos, heads);
+    this.applySeatOffsets();
   }
 
-  private buildStanding(spots: readonly PassengerSpot[]): void {
-    if (spots.length === 0) return;
+  /** Сидящие садятся не в спинку, а на край сиденья — и чуть выше пола. */
+  applySeatOffsets(): void {
+    for (const seat of this.seated) {
+      seat.object.position.set(
+        seat.x + Math.sin(seat.yaw) * this.seatForward,
+        this.seatUp,
+        seat.z + Math.cos(seat.yaw) * this.seatForward,
+      );
+    }
+  }
 
-    const bodyGeo = new THREE.CylinderGeometry(0.17, 0.21, 1.25, 7);
-    const bodyMat = new THREE.MeshStandardMaterial({ roughness: 0.92, metalness: 0.02 });
-    const bodies = new THREE.InstancedMesh(bodyGeo, bodyMat, spots.length);
-    bodies.castShadow = true;
+  /** Довернуть все фигуры: нужно, когда смотрим на глаз и правим на градусы. */
+  applyTurn(): void {
+    for (const child of this.group.children) {
+      child.rotation.y = Number(child.userData.baseYaw ?? 0) + this.turnOffset;
+    }
+  }
 
-    const headGeo = new THREE.SphereGeometry(0.115, 7, 5);
-    const headMat = new THREE.MeshStandardMaterial({ color: SKIN, roughness: 0.85 });
-    const heads = new THREE.InstancedMesh(headGeo, headMat, spots.length);
+  /** Запасной вариант: прежний силуэт из капсулы и головы. */
+  private silhouette(spot: PassengerSpot): THREE.Group {
+    const group = new THREE.Group();
+    group.position.set(spot.x, 0, spot.z);
+    group.rotation.y = spot.yaw + SILHOUETTE_FACING;
+    const color = new THREE.Color(spot.coat ?? '#4a5568');
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.18, 0.22, spot.pose === 'sit' ? 0.7 : 1.25, 7),
+      new THREE.MeshStandardMaterial({ color, roughness: 0.92 }),
+    );
+    body.position.y = spot.pose === 'sit' ? 0.78 : 0.63;
+    body.castShadow = true;
 
-    const matrix = new THREE.Matrix4();
-    const position = new THREE.Vector3();
-    const quaternion = new THREE.Quaternion();
-    const scale = new THREE.Vector3(1, 1, 1);
-    const rotation = new THREE.Quaternion();
-    const color = new THREE.Color();
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.115, 7, 5),
+      new THREE.MeshStandardMaterial({ color: SKIN, roughness: 0.85 }),
+    );
+    head.position.y = spot.pose === 'sit' ? 1.17 : 1.45;
 
-    spots.forEach((spot, index) => {
-      rotation.setFromEuler(new THREE.Euler(0, spot.yaw, 0));
-
-      position.set(spot.x, 0.63, spot.z);
-      matrix.compose(position, rotation, scale);
-      bodies.setMatrixAt(index, matrix);
-      bodies.setColorAt(index, color.set(spot.coat ?? '#4a5568'));
-
-      position.set(spot.x, 1.45, spot.z);
-      matrix.compose(position, quaternion, scale);
-      heads.setMatrixAt(index, matrix);
-    });
-
-    bodies.instanceMatrix.needsUpdate = true;
-    if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
-    heads.instanceMatrix.needsUpdate = true;
-
-    this.group.add(bodies, heads);
+    group.add(body, head);
+    return group;
   }
 
   dispose(): void {
     this.group.traverse((node) => {
-      if (node instanceof THREE.Mesh) {
-        node.geometry.dispose();
-        const material = node.material;
-        if (Array.isArray(material)) material.forEach((m) => m.dispose());
-        else material.dispose();
-      }
+      if (node instanceof THREE.Mesh) node.geometry.dispose();
     });
   }
 }

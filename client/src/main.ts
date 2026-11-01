@@ -16,6 +16,7 @@ import { createEnvironment, createTextures } from './render/textures';
 import { Hud } from './ui/hud';
 import { ensureSession, forgetSession } from './ui/login';
 import { ChunkManager } from './world/chunks';
+import { Characters, type CharacterId, type SceneryItem } from './world/characters';
 import { Passengers, type PassengerSpot } from './world/passengers';
 import { CAR_HALF_LENGTH, CAR_HALF_WIDTH, CAR_HEIGHT } from './world/car';
 
@@ -41,6 +42,9 @@ declare global {
       fps: () => number;
       cutscene: CutscenePlayer;
       playCutscene: (id: string) => Promise<void>;
+      npcCount: () => number;
+      turn: (deg: number) => number;
+      seat: (forward: number, up: number) => { forward: number; up: number } | null;
       probe: () => Record<string, unknown>;
     };
   }
@@ -56,10 +60,17 @@ async function main(): Promise<void> {
   const elFps = document.getElementById('s-fps') as HTMLElement;
   const elName = document.getElementById('s-name') as HTMLElement;  const elChunks = document.getElementById('s-chunks') as HTMLElement;
   const elMem = document.getElementById('s-mem') as HTMLElement;
+  const elPos = document.getElementById('s-pos') as HTMLElement;
   const elPanic = document.getElementById('v-panic') as HTMLElement;
   const elTrust = document.getElementById('v-trust') as HTMLElement;
   const elAir = document.getElementById('v-air') as HTMLElement;
   const elStress = document.getElementById('stress') as HTMLElement;
+  const elLobby = document.getElementById('lobby') as HTMLElement;
+  const elLobbyPlayers = document.getElementById('lobby-players') as HTMLElement;
+  const elLobbyStart = document.getElementById('lobby-start') as HTMLButtonElement;
+
+  /** Игра начинается по кнопке, чтобы у всех был один старт. */
+  let gameStarted = false;
   const elStatus = document.getElementById('status') as HTMLElement;
   const elHint = document.getElementById('hint') as HTMLElement;
   const elObjective = document.getElementById('objective') as HTMLElement;
@@ -91,44 +102,56 @@ async function main(): Promise<void> {
   const chunks = new ChunkManager(textures);
   scene.add(chunks.group);
 
-  // Пассажиры: пока силуэты, потом сюда встанут модели. Расстановка в данных.
-  void fetch('/api/content/passengers.json')
-    .then((response) => (response.ok ? response.json() : null))
-    .then((data: { spots?: PassengerSpot[] } | null) => {
-      const spots = data?.spots ?? [];
-      if (spots.length === 0) return;
-      scene.add(new Passengers(spots).group);
+  // Модели персонажей: пассажиры и агенты берут их отсюда.
+  const characters = new Characters();
+  /** Ссылка на пассажиров: нужна кнопке доворота на глаз. */
+  let passengers: Passengers | null = null;
+
+  // Пассажиры: расстановка в данных, модели — из charachters/*.glb.
+  void Promise.all([
+    characters.load(),
+    fetch('/api/content/passengers.json').then((response) => (response.ok ? response.json() : null)),
+    fetch('/api/content/scenery.json').then((response) => (response.ok ? response.json() : null)),
+  ])
+    .then(([, passengersData, sceneryData]) => {
+      const spots = (passengersData as { spots?: PassengerSpot[] } | null)?.spots ?? [];
+      if (spots.length > 0) {
+        passengers = new Passengers(spots, characters);
+        scene.add(passengers.group);
+      }
+
+      // мелкие вещи: велосипед у Владимира и всё, что допишут в данные
+      const items = (sceneryData as { items?: SceneryItem[] } | null)?.items ?? [];
+      for (const item of items) {
+        const object = characters.create(item.model as CharacterId);
+        if (!object) continue;
+        object.position.set(item.x, item.y ?? 0, item.z);
+        object.rotation.y = item.yaw ?? 0;
+        scene.add(object);
+      }
     })
     .catch(() => {
       // без пассажиров играется, просто вагон пустой
     });
 
-  const remotePlayers = new RemotePlayers();
+  const remotePlayers = new RemotePlayers(characters);
   scene.add(remotePlayers.group);
 
   const ambient = new THREE.AmbientLight(0x263247, 0.16);
   scene.add(ambient);
 
-  const flashlight = new THREE.SpotLight(0xfff4dc, 130, 15, Math.PI / 9, 0.5, 1.5);
-  flashlight.castShadow = true;
-  flashlight.shadow.mapSize.set(512, 512);
-  flashlight.shadow.camera.near = 0.2;
-  flashlight.shadow.camera.far = 13;
-  flashlight.shadow.bias = -0.004;
-  flashlight.position.set(0.06, -0.1, 0);
-
-  const flashlightTarget = new THREE.Object3D();
-  flashlightTarget.position.set(0, -0.15, -1);
-  flashlight.target = flashlightTarget;
-  camera.add(flashlight, flashlightTarget);
   scene.add(camera);
 
   const emergency = new THREE.PointLight(0xff2a18, 2.2, 7, 2);
   emergency.position.set(0, CAR_HEIGHT - 0.2, 0);
   scene.add(emergency);
 
-  const phoneLights = [0, 1, 2, 3].map(() => {
-    const light = new THREE.PointLight(0x86a8ff, 2.4, 3.8, 2);
+  // Заливка вагона: четыре лампы по длине. Ставим их на высоте груди, а не под
+  // потолком — иначе на потолке получается один огромный белый круг.
+  const fillLights = [-6.5, -2.5, 2.5, 6.5].map((z) => {
+    // оттенок тот же, что даёт лампа из бутылки и телефона
+    const light = new THREE.PointLight(0xdfe8ff, 0, 9, 2);
+    light.position.set(0, 1.55, z);
     scene.add(light);
     return light;
   });
@@ -136,13 +159,35 @@ async function main(): Promise<void> {
   // Свет в вагоне: 1 — горят лампы, 0 — полный блэкаут.
   // Значение приходит из сценария, поэтому его держим отдельно от рендера.
   let lightsValue = 1;
+  /** Куда свет едет: включается не рывком, а за пару секунд. */
+  let lightsTarget = 1;
   let lastAppliedLights = -1;
   let lastChunkVersion = -1;
   /** Сила тряски камеры от паники: 0 — спокойно, 1 — психоз. */
   let shake = 0;
+  /** После крафта света остальные гасят экраны: они больше не нужны. */
+  let phonesDimmed = false;
+  /** Лампа из бутылки и телефона ставится в мире один раз. */
+  let lampPlaced = false;
+  /** true — свет уже от бутылки с телефоном: холодный и тусклее, чем городской. */
+  let lampMode = false;
 
   function setLights(value: number): void {
-    lightsValue = Math.max(0, Math.min(1, value));
+    lightsTarget = Math.max(0, Math.min(1, value));
+  }
+
+  /** Плавный переход: вагон не щёлкает, а разгорается. */
+  function smoothLights(dt: number): void {
+    const diff = lightsTarget - lightsValue;
+    if (Math.abs(diff) < 0.004) {
+      if (lightsValue !== lightsTarget) {
+        lightsValue = lightsTarget;
+        updateLights();
+      }
+      return;
+    }
+    lightsValue += diff * Math.min(1, dt * 2.6);
+    updateLights();
   }
 
   function updateLights(): void {
@@ -152,13 +197,39 @@ async function main(): Promise<void> {
     lastChunkVersion = chunks.version;
 
     chunks.group.traverse((node) => {
-      if (node.name !== 'lamp') return;
-      const mesh = node as THREE.Mesh;
-      const material = mesh.material as THREE.MeshStandardMaterial;
-      material.emissive.setRGB(1, 0.97, 0.88).multiplyScalar(lightsValue * 0.9);
+      if (node.name === 'lamp') {
+        const mesh = node as THREE.Mesh;
+        const material = mesh.material as THREE.MeshStandardMaterial;
+        // до блэкаута плафоны тёплые, от лампы из бутылки — холодные
+        if (lampMode) material.emissive.setRGB(0.62, 0.78, 1).multiplyScalar(lightsValue * 0.9);
+        else material.emissive.setRGB(1, 0.97, 0.88).multiplyScalar(lightsValue * 0.9);
+        return;
+      }
+
+      // после крафта света экраны у людей гаснут
+      if (node.name === 'phones' && phonesDimmed) {
+        const mesh = node as THREE.Mesh;
+        const material = mesh.material as THREE.MeshBasicMaterial;
+        material.color.setHex(0x2b3550);
+      }
     });
-    ambient.intensity = 0.16 + lightsValue * 0.55;
-    scene.environmentIntensity = 0.25 + lightsValue * 0.35;
+    if (lampMode) {
+      // свет от бутылки с телефоном: холодный, приглушённый
+      ambient.intensity = 0.16 + lightsValue * 0.45;
+      scene.environmentIntensity = 0.25 + lightsValue * 0.3;
+      for (const light of fillLights) {
+        light.color.setHex(0x9dc2ff);
+        light.intensity = lightsValue * 3.3;
+      }
+    } else {
+      // городское питание: тёплое и ярче
+      ambient.intensity = 0.16 + lightsValue * 0.55;
+      scene.environmentIntensity = 0.25 + lightsValue * 0.35;
+      for (const light of fillLights) {
+        light.color.setHex(0xffe4b8);
+        light.intensity = lightsValue * 5.4;
+      }
+    }
   }
 
   function setObjective(text: string): void {
@@ -190,18 +261,67 @@ async function main(): Promise<void> {
 
   const elCutscene = document.getElementById('cutscene') as HTMLElement;
   const elCutsceneSub = document.getElementById('cutscene-sub') as HTMLElement;
+  const elPhone = document.getElementById('phone') as HTMLElement;
+  const elPhoneNet = document.getElementById('phone-net') as HTMLElement;
+  const elPhoneVideo = document.getElementById('phone-video') as HTMLVideoElement;
 
-  const cutscene = new CutscenePlayer(camera, {
-    onSubtitle: (text) => {
-      elCutsceneSub.textContent = text;
-      elCutsceneSub.classList.toggle('hidden', !text);
+  const cutscene = new CutscenePlayer(
+    camera,
+    {
+      onSubtitle: (text) => {
+        elCutsceneSub.textContent = text;
+        elCutsceneSub.classList.toggle('hidden', !text);
+      },
+      onLights: (value) => setLights(value),
+      onPhone: (action, src) => {
+        switch (action) {
+          case 'play': {
+            if (src && elPhoneVideo.src !== location.origin + src) elPhoneVideo.src = src;
+            elPhoneNet.classList.add('hidden');
+            elPhone.classList.remove('lowered');
+            elPhone.classList.remove('hidden');
+            elPhoneVideo.currentTime = 0;
+
+            // звук включаем, если браузер разрешил: кнопка «Начать» даёт на это право.
+            // Если автозапуск отклонили — играем без звука, но сцену не ломаем.
+            elPhoneVideo.muted = false;
+            elPhoneVideo.volume = 0.8;
+            void elPhoneVideo.play().catch(() => {
+              elPhoneVideo.muted = true;
+              void elPhoneVideo.play().catch(() => {});
+            });
+            return;
+          }
+          case 'freeze':
+            // видео виснет на кадре — ровно как залипший тик-ток
+            elPhoneVideo.pause();
+            return;
+          case 'net':
+            elPhoneNet.classList.remove('hidden');
+            return;
+          case 'lower':
+            // экран уходит вниз: сначала телефон, потом подъём
+            elPhone.classList.add('lowered');
+            return;
+          case 'hide':
+            elPhoneVideo.pause();
+            elPhone.classList.add('hidden');
+            elPhone.classList.remove('lowered');
+            elPhoneNet.classList.add('hidden');
+            return;
+        }
+      },
+      onEnd: (yaw, pitch) => {
+        elCutscene.classList.add('hidden');
+        elCutsceneSub.classList.add('hidden');
+
+        // телефон уже убран — теперь игрок встаёт с сиденья
+        player.setView(yaw, pitch);
+        if (player.isSitting) player.standUp();
+      },
     },
-    onLights: (value) => setLights(value),
-    onEnd: () => {
-      elCutscene.classList.add('hidden');
-      elCutsceneSub.classList.add('hidden');
-    },
-  });
+    () => ({ x: player.position.x, z: player.position.z, yaw: player.facing }),
+  );
 
   async function playCutscene(id: string): Promise<void> {
     if (cutscene.playing) return;
@@ -304,9 +424,47 @@ async function main(): Promise<void> {
 
   hud.say('Темно. В кармане бутылка воды и телефон — экран светит синим.');
 
-  function applyFlashlight(hasLight: boolean): void {
-    flashlight.intensity = hasLight ? 210 : 130;
-    flashlight.angle = hasLight ? Math.PI / 7.5 : Math.PI / 9;
+  /**
+   * Лампа из подручного: телефон экраном вверх, сверху пластиковая бутылка —
+   * она разбивает свет по всему вагону. Стоит на полу там, где её собрали.
+   */
+  function addLamp(x: number, z: number): void {
+    if (lampPlaced) return;
+    lampPlaced = true;
+
+    const group = new THREE.Group();
+    group.name = 'lamp';
+    group.position.set(x, 0, z);
+
+    const screen = new THREE.Mesh(
+      new THREE.BoxGeometry(0.09, 0.012, 0.17),
+      new THREE.MeshBasicMaterial({ color: 0xf2f6ff }),
+    );
+    screen.position.y = 0.016;
+    group.add(screen);
+
+    const glass = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.036, 0.042, 0.23, 12, 1, true),
+      new THREE.MeshStandardMaterial({
+        color: 0xc9dcff,
+        transparent: true,
+        opacity: 0.34,
+        roughness: 0.25,
+        side: THREE.DoubleSide,
+        emissive: 0x8fb0ff,
+        emissiveIntensity: 0.45,
+      }),
+    );
+    glass.position.y = 0.13;
+    group.add(glass);
+
+    // свет от лампы почти рассеянный: главное — общий ровный свет по вагону,
+    // а не пятно под ногами
+    const light = new THREE.PointLight(0xb9d4ff, 1.1, 3.2, 2);
+    light.position.y = 0.28;
+    group.add(light);
+
+    scene.add(group);
   }
 
   function placeName(): string {
@@ -352,17 +510,39 @@ async function main(): Promise<void> {
       replica.apply(players, self.id, performance.now());
       inventory.apply(slots);
       hud.renderSlots();
-      applyFlashlight(inventory.has('flashlight'));
     },
     onInventory: (slots, text) => {
       inventory.apply(slots);
       hud.renderSlots();
       if (text) hud.say(text);
-      applyFlashlight(inventory.has('flashlight'));
+
+      if (inventory.has('flashlight') && !phonesDimmed) {
+        phonesDimmed = true;
+        lastAppliedLights = -1; // заставим пересчитать свет и экраны
+      }
     },
     onEvent: (kind, data) => {
       switch (kind) {
-        case 'thought':
+        case 'notes':
+          hud.setNotes((data.list as Array<{ id: string; text: string }>) ?? []);
+          return;
+        case 'spawn':
+          // сервер рассадил игроков: садимся на своё место до начала сцены
+          player.sitDown(Number(data.x ?? 0), Number(data.z ?? 0), Number(data.yaw ?? 0));
+          // страховка: если сцена не придёт (или её нет), сидеть вечно нельзя
+          setTimeout(() => {
+            if (player.isSitting && !cutscene.playing) player.standUp();
+          }, 3000);
+          return;
+        case 'lamp':
+          addLamp(Number(data.x ?? 0), Number(data.z ?? 0));
+          // с этого момента вагон светит бутылкой с телефоном: холодно и тише
+          if (!lampMode) {
+            lampMode = true;
+            lastAppliedLights = -1; // заставим пересчитать свет и цвет плафонов
+          }
+          return;
+        case 'say':
           hud.say(String(data.text ?? ''), 6);
           return;
         case 'objective':
@@ -401,6 +581,7 @@ async function main(): Promise<void> {
           x: npc.pos[0],
           z: npc.pos[2],
           yaw: npc.yaw,
+          model: npc.model,
           targetX: npc.pos[0],
           targetZ: npc.pos[2],
           targetYaw: npc.yaw,
@@ -419,6 +600,18 @@ async function main(): Promise<void> {
     onPong: (ms) => {
       elPing.textContent = `${Math.round(ms)} мс`;
     },
+    onLobby: (players, started) => {
+      gameStarted = started;
+      elLobby.classList.toggle('hidden', started);
+
+      elLobbyPlayers.innerHTML = '';
+      for (const name of players) {
+        const item = document.createElement('li');
+        item.textContent = name;
+        elLobbyPlayers.appendChild(item);
+      }
+      elLobbyStart.disabled = started;
+    },
     onAuthFailed: () => {
       // токен протух или отозван: чистим и просим войти заново
       forgetSession();
@@ -428,6 +621,9 @@ async function main(): Promise<void> {
 
   net.connect();
   setInterval(() => net.ping(), 1000);
+
+  // кнопка лобби: пока её не нажали, сценарий не идёт ни у кого
+  elLobbyStart.addEventListener('click', () => net.start());
 
   /* ───────────────────────────── кадр ───────────────────────────── */
 
@@ -443,7 +639,11 @@ async function main(): Promise<void> {
     }
 
     if (event.code === 'KeyT' && !chatOpen) {
-      if (nearNpc) openChat(nearNpc);
+      if (nearNpc) {
+        // без этого нажатая буква (t или «е» в русской раскладке) попадает в поле
+        event.preventDefault();
+        openChat(nearNpc);
+      }
       return;
     }
 
@@ -493,18 +693,6 @@ async function main(): Promise<void> {
     elChatInput.value = '';
   });
 
-  function updatePhoneLights(): void {
-    const phones = chunks.phones;
-    const sorted = [...phones].sort(
-      (a, b) => a.distanceToSquared(player.position) - b.distanceToSquared(player.position),
-    );
-    phoneLights.forEach((light, i) => {
-      const p = sorted[i];
-      if (!p) return;
-      light.position.set(p.x, p.y + 0.03, p.z);
-    });
-  }
-
   let inputAccumulator = 0;
   let hudAccumulator = 0;
   let lastFrame = performance.now();
@@ -517,7 +705,7 @@ async function main(): Promise<void> {
         // иначе после сцены камеру дёрнет
         cutscene.update(dt);
         input.consumeLook();
-      } else if (!chatOpen) {
+      } else if (gameStarted && !chatOpen) {
         player.update(dt, input, chunks.colliders, bounds);
       }
       chunks.update(player.position.z);
@@ -598,8 +786,7 @@ async function main(): Promise<void> {
       lastFrame = now;
 
       emergency.intensity = 2.0 + Math.sin(elapsed * 2.3) * 0.5;
-      updatePhoneLights();
-      updateLights();
+      smoothLights(frameDt);
 
       remotePlayers.update([...replica.step(frameDt, now), ...npcEntities]);
 
@@ -614,6 +801,7 @@ async function main(): Promise<void> {
         hudAccumulator = 0;
         hud.setPulse(pulse.bpm, pulse.level);
         hud.setPlace(placeName());
+        elPos.textContent = `x ${player.position.x.toFixed(2)} · z ${player.position.z.toFixed(2)}`;
       }
 
       elHint.classList.toggle('hidden', input.pointerLocked);
@@ -644,6 +832,26 @@ async function main(): Promise<void> {
     fps: () => loop.fps(),
     cutscene,
     playCutscene,
+    // отладка: сколько агентов пришло с сервера
+    npcCount: () => npcEntities.length,
+    /** Довернуть всех персонажей на градусы: подгонка направления без сборки. */
+    turn: (deg: number) => {
+      const rad = (deg * Math.PI) / 180;
+      if (passengers) {
+        passengers.turnOffset += rad;
+        passengers.applyTurn();
+      }
+      remotePlayers.turnOffset += rad;
+      return +(((passengers?.turnOffset ?? remotePlayers.turnOffset) * 180) / Math.PI).toFixed(1);
+    },
+    /** Сдвинуть сидящих: вперёд к проходу и вверх, метры. */
+    seat: (forward: number, up: number) => {
+      if (!passengers) return null;
+      passengers.seatForward = forward;
+      passengers.seatUp = up;
+      passengers.applySeatOffsets();
+      return { forward, up };
+    },
     // отладка: посчитать ближайший предмет и персонажа без ожидания кадров
     probe: () => {
       const forwardX = -Math.sin(player.facing);

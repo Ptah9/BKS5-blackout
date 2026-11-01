@@ -13,6 +13,13 @@ import { clampToBounds, resolveCircle, type Bounds, type Box2 } from '../world/c
 
 export const EYE_HEIGHT = 1.6;
 
+/** Высота глаз сидя: колени подняты, камера ниже стоячей. */
+export const SEAT_EYE_HEIGHT = 1.08;
+
+/** Куда шагнуть из сиденья — в проход, ближе к центру вагона. */
+const AISLE_X = 0.42;
+const STAND_DURATION = 1.3;
+
 const RADIUS = 0.32;
 const WALK_SPEED = 2.3;
 const RUN_SPEED = 4.0;
@@ -28,10 +35,35 @@ export class Player {
   private pitch = 0;
   private bobPhase = 0;
   private bob = 0;
+  /** Высота глаз: сидя ниже, вставая — поднимается. */
+  private eyeY = EYE_HEIGHT;
+  private seated = false;
+  /** Анимация подъёма: шаг из сиденья в проход вместе с высотой камеры. */
+  private rising: { fromX: number; toX: number; k: number } | null = null;
 
   constructor(private readonly camera: THREE.PerspectiveCamera) {}
 
   update(dt: number, input: Input, colliders: readonly Box2[], bounds: Bounds): void {
+    // поднимаемся: движение забрано на время вставания
+    if (this.rising) {
+      this.rising.k = Math.min(1, this.rising.k + dt / STAND_DURATION);
+      const k = smooth(this.rising.k);
+      this.position.x = this.rising.fromX + (this.rising.toX - this.rising.fromX) * k;
+      this.eyeY = SEAT_EYE_HEIGHT + (EYE_HEIGHT - SEAT_EYE_HEIGHT) * k;
+      if (this.rising.k >= 1) this.rising = null;
+      this.camera.position.set(this.position.x, this.eyeY, this.position.z);
+      this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
+      return;
+    }
+
+    // сидим: камеру держит катсцена, а ходить нельзя
+    if (this.seated) {
+      input.consumeLook();
+      this.camera.position.set(this.position.x, this.eyeY, this.position.z);
+      this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
+      return;
+    }
+
     const look = input.consumeLook();
     this.yaw -= look.x * input.sensitivity;
     this.pitch -= look.y * input.sensitivity;
@@ -86,6 +118,7 @@ export class Player {
     const bobY = Math.sin(this.bobPhase) * this.bob;
     const roll = Math.sin(this.bobPhase * 0.5) * this.bob * 0.4;
 
+    this.eyeY = EYE_HEIGHT;
     this.camera.position.set(this.position.x, EYE_HEIGHT + bobY, this.position.z);
     this.camera.rotation.set(this.pitch, this.yaw, roll, 'YXZ');
   }
@@ -100,6 +133,37 @@ export class Player {
     return this.yaw;
   }
 
+  /** Сидит или уже встаёт — на это время управление забрано. */
+  get isSitting(): boolean {
+    return this.seated || this.rising !== null;
+  }
+
+  /** Посадить на место: сервер присылает координаты сиденья при старте игры. */
+  sitDown(x: number, z: number, yaw: number): void {
+    this.teleport(x, z, yaw);
+    this.pitch = 0;
+    this.seated = true;
+    this.rising = null;
+    this.eyeY = SEAT_EYE_HEIGHT;
+  }
+
+  /** Встать и шагнуть в проход — уже после того, как убрал телефон. */
+  standUp(): void {
+    if (!this.seated) return;
+    this.seated = false;
+    this.rising = {
+      fromX: this.position.x,
+      toX: this.position.x > 0 ? AISLE_X : -AISLE_X,
+      k: 0,
+    };
+  }
+
+  /** Поставить взгляд так, как закончилась катсцена — без рывка на стыке. */
+  setView(yaw: number, pitch = 0): void {
+    this.yaw = yaw;
+    this.pitch = clamp(pitch, -PITCH_LIMIT, PITCH_LIMIT);
+  }
+
   /** Поставить игрока по данным сервера: при входе и после переподключения. */
   teleport(x: number, z: number, yaw: number): void {
     this.position.x = x;
@@ -107,6 +171,10 @@ export class Player {
     this.yaw = yaw;
     this.velocity.set(0, 0);
   }
+}
+
+function smooth(k: number): number {
+  return k * k * (3 - 2 * k);
 }
 
 function clamp(v: number, lo: number, hi: number): number {

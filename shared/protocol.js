@@ -28,6 +28,9 @@ export const MSG = Object.freeze({
   // сценарий
   EVENT: 'event',
   ZONE: 'zone',
+  // лобби
+  LOBBY: 'lobby',
+  START: 'start',
   // агенты
   SAY: 'say',
   NPC_REPLY: 'npc_reply',

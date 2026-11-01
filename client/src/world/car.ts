@@ -307,33 +307,18 @@ export function buildCar(
   tubeMesh.name = 'tubes';
   if (visibleTubes.length > 0) group.add(tubeMesh);
 
-  // ── телефоны пассажиров ───────────────────────────────────────────────
+  // ── свет от телефонов пассажиров ──────────────────────────────────────
+  // Сами экраны не рисуем: плоские прямоугольники в воздухе выглядели как
+  // летающие бумажки. Остался только свет — точки, по которым ставятся лампы.
   const phones: THREE.Vector3[] = [];
-  const phoneGeo = new THREE.PlaneGeometry(0.15, 0.085);
-  // чуть крупнее и мягче по цвету: на 640 точках мелкие яркие прямоугольники
-  // мигают на пиксельной сетке, это читается как «сломанный экран»
-  const phoneMat = new THREE.MeshBasicMaterial({ color: 0x86a6e8, side: THREE.DoubleSide });
   const phoneZ = [-8.3, -7.6, -4.6, -3.4, -2.4, -1.2, 1.2, 2.4, 3.6, 8.1].filter(
     (z) => z >= zFrom && z <= zTo,
   );
 
-  const phoneMesh = new THREE.InstancedMesh(phoneGeo, phoneMat, Math.max(1, phoneZ.length));
-  const phoneMatrix = new THREE.Matrix4();
-  const phoneQuat = new THREE.Quaternion();
-  const phoneScale = new THREE.Vector3(1, 1, 1);
-
   phoneZ.forEach((z, i) => {
     const side = i % 2 === 0 ? -1 : 1;
-    const x = side * (CAR_HALF_WIDTH - 0.5);
-    phoneQuat.setFromEuler(new THREE.Euler(0, side * (Math.PI / 2), 0));
-    phoneMatrix.compose(new THREE.Vector3(x, 1.2, z), phoneQuat, phoneScale);
-    phoneMesh.setMatrixAt(i, phoneMatrix);
-    phones.push(new THREE.Vector3(x, 1.2, z));
+    phones.push(new THREE.Vector3(side * (CAR_HALF_WIDTH - 0.5), 1.2, z));
   });
-  phoneMesh.count = phoneZ.length;
-  phoneMesh.instanceMatrix.needsUpdate = true;
-  phoneMesh.name = 'phones';
-  if (phoneZ.length > 0) group.add(phoneMesh);
 
   // ── коллизии: сиденья по бортам, обрезанные по границам чанка ─────────
   const colliders: Box2[] = [];

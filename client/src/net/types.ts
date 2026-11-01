@@ -6,4 +6,6 @@ export interface PlayerView {
   x: number;
   z: number;
   yaw: number;
+  /** Модель персонажа: агенты приходят из content/npcs.json, у игроков её нет. */
+  model?: string;
 }

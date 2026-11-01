@@ -15,9 +15,12 @@ export class Hud {
   private readonly bpmEl = document.getElementById('v-bpm') as HTMLElement;
   private readonly placeEl = document.getElementById('v-place') as HTMLElement;
   private readonly thoughtEl = document.getElementById('thought') as HTMLElement;
+  private readonly notesEl = document.getElementById('notes') as HTMLElement;
+  private readonly notesListEl = document.getElementById('notes-list') as HTMLElement;
 
   private readonly slotEls: HTMLElement[] = [];
   private thoughtTimer = 0;
+  private notesSignature = '';
 
   constructor(private readonly inventory: Inventory) {
     this.invEl.innerHTML = '';
@@ -54,7 +57,26 @@ export class Hud {
     this.placeEl.textContent = text;
   }
 
-  /** Плашка мыслей: показывается на несколько секунд и гаснет сама. */
+  /**
+   * Блокнот: мысли висят, пока не потеряют актуальность. Снимает их сервер —
+   * по флагу мира, а не по таймеру: «душно» исчезает, когда открыли форточку.
+   */
+  setNotes(list: Array<{ id: string; text: string }>): void {
+    const signature = JSON.stringify(list);
+    if (signature === this.notesSignature) return;
+    this.notesSignature = signature;
+
+    this.notesListEl.innerHTML = '';
+    for (const note of list) {
+      const item = document.createElement('li');
+      item.textContent = note.text;
+      this.notesListEl.appendChild(item);
+    }
+
+    this.notesEl.classList.toggle('hidden', list.length === 0);
+  }
+
+  /** Мимоходная реплика: сказали и забыли — в блокнот такое не пишется. */
   say(text: string, seconds = 5): void {
     this.thoughtEl.textContent = text;
     this.thoughtEl.classList.remove('hidden');

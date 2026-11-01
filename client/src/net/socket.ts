@@ -18,8 +18,9 @@ interface Handlers {
   onPlayers?: (list: PlayerView[]) => void;
   onInventory?: (slots: Array<string | null>, text: string) => void;
   onEvent?: (kind: string, data: Record<string, unknown>) => void;
-  onNpcs?: (list: Array<{ id: string; name: string; pos: number[]; yaw: number }>) => void;
+  onNpcs?: (list: Array<{ id: string; name: string; pos: number[]; yaw: number; model?: string }>) => void;
   onNpcReply?: (id: string, delta: string, done: boolean) => void;
+  onLobby?: (players: string[], started: boolean) => void;
   onPong?: (rttMs: number) => void;
   onAuthFailed?: () => void;
 }
@@ -87,8 +88,7 @@ export class Net {
     this.ws.send(JSON.stringify({ t: MSG.ZONE, chunk }));
   }
 
-  /** Сказать персонажу. Ответ придёт потоком через onNpcReply. */
-  say(npcId: string, text: string): void {
+  /** Сказать персонажу. Ответ придёт потоком через onNpcReply. */  say(npcId: string, text: string): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({ t: MSG.SAY, to: npcId, text }));
   }
@@ -97,6 +97,12 @@ export class Net {
   interact(id: string, verb: string): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({ t: MSG.INTERACT, id, verb }));
+  }
+
+  /** Старт игры: сценарий запускается у всех одновременно. */
+  start(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.START }));
   }
 
   ping(): void {
@@ -128,9 +134,13 @@ export class Net {
           (msg.players as PlayerView[]) ?? [],
           (msg.inventory as Array<string | null>) ?? [],
         );
-        this.handlers.onNpcs?.(
-          (msg.npcs as Array<{ id: string; name: string; pos: number[]; yaw: number }>) ?? [],
-        );
+        // список агентов приходит не в каждом снапшоте: пустой ответ не должен
+        // стирать уже расставленных
+        if (Array.isArray(msg.npcs)) {
+          this.handlers.onNpcs?.(
+            msg.npcs as Array<{ id: string; name: string; pos: number[]; yaw: number; model?: string }>,
+          );
+        }
         return;
 
       case MSG.NPC_REPLY:
@@ -150,6 +160,10 @@ export class Net {
 
       case MSG.EVENT:
         this.handlers.onEvent?.(String(msg.kind ?? ''), (msg.data as Record<string, unknown>) ?? {});
+        return;
+
+      case MSG.LOBBY:
+        this.handlers.onLobby?.((msg.players as string[]) ?? [], Boolean(msg.started));
         return;
 
       case MSG.PLAYERS:

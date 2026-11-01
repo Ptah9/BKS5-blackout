@@ -1,29 +1,51 @@
 {
   "id": "metro_tunnel",
-  "title": "Поезд встал в тоннеле",
   "beats": [
     { "at": 0.5, "do": "cutscene", "id": "intro_blackout" },
-    { "at": 7.2, "do": "stat", "key": "panic", "delta": 15 },
-    { "at": 2, "do": "thought", "text": "Поезд встал. Тишина такая, что слышно чужое дыхание." },
-    { "at": 7, "do": "lights", "value": 0, "fadeMs": 1400 },
-    { "at": 8, "do": "phone", "value": "no_signal" },
-    { "at": 10, "do": "thought", "text": "Свет погас целиком. На экране — «нет сети»." },
-    { "at": 14, "do": "objective", "text": "Найди, чем осветить вагон" }
+    { "at": 7.0, "do": "stat", "key": "panic", "delta": 8 },
+    { "at": 7.4, "do": "thought", "id": "dark", "text": "Слишком темно. С этим надо что-то делать.", "until": "has_light" }
   ],
   "triggers": [
     {
       "on": "flag",
       "flag": "has_light",
       "once": true,
-      "do": "thought",
-      "text": "Теперь видно. И люди вокруг смотрят на тебя."
+      "do": "say",
+      "text": "Теперь видно. Остальные гасят экраны, чтобы не слепили."
     },
     {
-      "on": "zone",
-      "chunk": "car_a",
+      "on": "flag",
+      "flag": "has_light",
       "once": true,
       "do": "thought",
-      "text": "Впереди кабина машиниста. Дверь приоткрыта."
+      "id": "stuffy",
+      "text": "Душно. И жарко так, что хочется снять куртку.",
+      "until": "window_open"
+    },
+    {
+      "on": "flag",
+      "flag": "window_open",
+      "once": true,
+      "do": "say",
+      "text": "Воздух пошёл. Дышать стало легче, и люди затихают."
+    },
+    {
+      "on": "flag",
+      "flag": "window_open",
+      "once": true,
+      "do": "radio",
+      "text": "Внимание. Оставайтесь в вагонах.",
+      "repeats": 4,
+      "interval": 4
+    },
+    {
+      "on": "flag",
+      "flag": "cab_open",
+      "once": true,
+      "do": "thought",
+      "id": "cab_empty",
+      "text": "Кабина пуста. Дверь наружу распахнута, и из неё тянет холодом.",
+      "until": "cab_papered"
     }
   ]
 }
