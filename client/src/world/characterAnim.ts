@@ -51,11 +51,7 @@ const WALK_KNEE = 0.7;
 const WALK_BOB = 0.012;
 
 /** Сидячие модели: поворот головы включён, но мягче стоящих. */
-const SEATED_YAW = 0.45;
-const SEATED_PITCH_UP = 0.15;
-const SEATED_PITCH_DOWN = 0.2;
 /** Дальше этого угла сидящий не следит, а оборачивается медленным обзором. */
-const SEATED_BEHIND = 0.95;
 
 const SPINE_LIMIT = 0.16;
 
@@ -245,16 +241,12 @@ export class CharacterIdle {
       // а по глубине — там, где на самом деле висит голова.
       this.headShift = new THREE.Vector3(0, 0, shift.z);
       this.headBasePos.copy(this.head!.position);
-      // Сидячие модели: голова висит позади кости. Им НИКАКОЙ компенсации
-      // позиции — кость не двигаем ни на миллиметр (именно это ломало лицо),
-      // только вращение вокруг её собственного места и мягкие пределы.
+      // Сидячие модели: голова висит позади кости, куда смотрит лицо —
+      // геометрия не говорит. Поэтому ни поворота, ни сдвига: голова
+      // стоит там, где её нарисовали, и просто дышит с корпусом.
       if (shift.z < -0.2) {
         this.headLocked = true;
         this.headShift = null;
-        this.maxYaw = SEATED_YAW;
-        this.maxPitchUp = SEATED_PITCH_UP;
-        this.maxPitchDown = SEATED_PITCH_DOWN;
-        this.behind = SEATED_BEHIND;
       }
     }
 
@@ -595,7 +587,7 @@ export class CharacterIdle {
     // иначе шея складывается с корпусом и предел 54° превращается в 65°
     const spineYaw = this.headLocked ? 0 : clamp(this.yaw * SPINE_SHARE, -SPINE_LIMIT, SPINE_LIMIT);
 
-    if (this.head && this.upright) {
+    if (this.head && this.upright && !this.headLocked) {
       // микротремор: даже замерев на цели, человек не превращается в манекен
       const tremor = Math.sin(this.time * 1.9 + this.phase) * 0.008;
       this.head.rotation.y = this.baseHeadY + this.yaw - spineYaw + tremor;
