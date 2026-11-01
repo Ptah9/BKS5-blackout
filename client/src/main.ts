@@ -394,6 +394,8 @@ async function main(): Promise<void> {
   // там же — никакого DOM-текста поверх мира.
   const PHONE_W = 128;
   const PHONE_H = 228;
+  /** false — телефон как в оригинале (обычное видео и DOM-плашка), true — PS1-буфер. */
+  const PHONE_PS1 = false;
   const SCREEN_X = 19;
   const SCREEN_Y = 34;
   const SCREEN_W = 90;
@@ -414,8 +416,9 @@ async function main(): Promise<void> {
     'background:transparent',
     'pointer-events:none',
   ].join(';');
-  elPhoneVideo.style.opacity = '0';
+  elPhoneVideo.style.opacity = PHONE_PS1 ? '0' : '1';
   elPhoneVideo.after(elPhoneScreen);
+  if (!PHONE_PS1) elPhoneScreen.style.display = 'none';
   const phoneCtx = elPhoneScreen.getContext('2d');
   if (phoneCtx) phoneCtx.imageSmoothingEnabled = false;
 
@@ -524,9 +527,9 @@ async function main(): Promise<void> {
             elPhoneVideo.pause();
             return;
           case 'net':
-            // плашку рисуем в буфере телефона, DOM-текст остаётся скрытым
+            // плашка: в PS1-режиме рисуется в буфере, иначе это обычный DOM-элемент
             phoneNet = true;
-            elPhoneNet.classList.add('hidden');
+            elPhoneNet.classList.toggle('hidden', PHONE_PS1);
             return;
           case 'lower':
             // экран уходит вниз: сначала телефон, потом подъём
@@ -1267,14 +1270,14 @@ async function main(): Promise<void> {
         dinastyOn = true;
         dinastyAt = altAt;
         soundscape.play('dinasty', {
-          volume: 0.003,
+          volume: 0.001,
           fade: 4,
           loop: true,
           persist: true,
           at: altAt,
           near: 1,
           far: 2.5,
-          nearVolume: 0.012,
+          nearVolume: 0.004,
         });
       } else if (dinastyOn && Math.hypot(altAt[0] - dinastyAt[0], altAt[1] - dinastyAt[1]) > 0.25) {
         dinastyAt = altAt;
@@ -1410,7 +1413,7 @@ async function main(): Promise<void> {
       }
 
       // телефон показывает не видео, а пиксельный кадр из него
-      drawPhoneFrame();
+      if (PHONE_PS1) drawPhoneFrame();
 
       post.render(renderer, scene, camera, elapsed);
       void alpha;
