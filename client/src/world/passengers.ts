@@ -68,8 +68,11 @@ export class Passengers {
       model.userData.baseYaw = spot.yaw;
       model.rotation.y = spot.yaw;
       this.group.add(model);
-      // пассажир не статуя: голова поворачивается, спина дышит
-      this.idles.push(new CharacterIdle(model, (index * 0.37) % 1));
+      // пассажир не статуя: голова поворачивается, спина дышит.
+      // Сид — не только индекс: у стоящих в разных концах вагона
+      // характер (темп дыхания, фаза, тяга к телефону) тоже разный.
+      const seed = (index * 0.37 + Math.abs(spot.x) * 0.13 + Math.abs(spot.z) * 0.07) % 1;
+      this.idles.push(new CharacterIdle(model, seed));
 
       if (spot.pose === 'sit') {
         this.seated.push({ object: model, x: spot.x, z: spot.z, yaw: spot.yaw });
@@ -126,6 +129,9 @@ export class Passengers {
   }
 
   dispose(): void {
+    // без этого вышедшие из сцены фигуры остаются целями для соседей
+    for (const idle of this.idles) idle.dispose();
+    this.idles.length = 0;
     this.group.traverse((node) => {
       if (node instanceof THREE.Mesh) node.geometry.dispose();
     });

@@ -12,6 +12,8 @@
 
 import * as THREE from 'three';
 
+import { soundscape, type SoundName } from '../audio/soundscape';
+
 export interface CameraKey {
   t: number;
   /** Мировые координаты или, при anchor: 'player', — [вправо, вверх, вперёд] от игрока. */
@@ -29,6 +31,18 @@ export interface CutsceneTrack {
   phone?: PhoneAction;
   /** Для phone: 'play' — файл видео. */
   src?: string;
+  /** Дорожка звука из soundscape: заводится ровно в этот момент. */
+  sound?: SoundName;
+  /** Громкость дорожки 0..1 (иначе берётся из реестра). */
+  volume?: number;
+  /** Плавный вход, секунды (по умолчанию 0.35). */
+  fade?: number;
+  /** Играть петлёй. */
+  loop?: boolean;
+  /** Не гасить по концу сцены: гул тоннеля и шёпот живут дальше. */
+  persist?: boolean;
+  /** Имя дорожки, которую в этот момент гасим. */
+  stop?: SoundName;
 }
 
 export interface CutsceneData {
@@ -83,6 +97,8 @@ export class CutscenePlayer {
     this.data = data;
     this.time = 0;
     this.fired.clear();
+    // всё, что зазвучит дальше, принадлежит сцене: по её концу звук уберём
+    soundscape.beginCutscene();
     this.savedPosition.copy(this.camera.position);
     this.savedQuaternion.copy(this.camera.quaternion);
   }
@@ -108,6 +124,16 @@ export class CutscenePlayer {
       if (track.sub !== undefined) this.handlers.onSubtitle?.(track.sub);
       if (track.lights !== undefined) this.handlers.onLights?.(track.lights);
       if (track.phone !== undefined) this.handlers.onPhone?.(track.phone, track.src);
+
+      if (track.sound) {
+        soundscape.play(track.sound, {
+          volume: track.volume,
+          fade: track.fade,
+          loop: track.loop,
+          persist: track.persist,
+        });
+      }
+      if (track.stop) soundscape.stop(track.stop, track.fade ?? 0.8);
     });
 
     if (this.time >= data.duration) this.finish();
@@ -121,6 +147,8 @@ export class CutscenePlayer {
     const pitch = Math.asin(Math.max(-1, Math.min(1, direction.y)));
 
     this.data = null;
+    // сцена кончилась или её пропустили: гасим её звук, петли-подложки остаются
+    soundscape.endCutscene(0.5);
     this.handlers.onPhone?.('hide');
     this.camera.position.copy(this.savedPosition);
     this.camera.quaternion.copy(this.savedQuaternion);

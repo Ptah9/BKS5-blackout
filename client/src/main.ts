@@ -2,6 +2,7 @@
 
 import './style.css';
 import { Voices, presetFor, type VoicePreset } from './audio/voice';
+import { soundscape, type SoundName } from './audio/soundscape';
 import { Input } from './core/input';
 import { startLoop } from './core/loop';
 import { RemotePlayers } from './game/remotePlayers';
@@ -15,6 +16,7 @@ import { Net } from './net/socket';
 import { PostFX } from './render/post';
 import { createEnvironment, createTextures } from './render/textures';
 import { Hud } from './ui/hud';
+import { AdminPanel, type AdminState } from './ui/admin';
 import { ensureSession, forgetSession } from './ui/login';
 import { ChunkManager } from './world/chunks';
 import { Characters, type CharacterId, type SceneryItem } from './world/characters';
@@ -25,6 +27,7 @@ import { buildTunnel } from './world/tunnel';
 import { buildPlatform } from './world/platform';
 import { createPropMesh } from './world/propMeshes';
 import type { Box2 } from './world/collision';
+import type { LightSpot } from './world/location';
 
 /**
  * M2: вход по логину с паролем, состояние в базе, другие игроки в вагоне.
@@ -79,7 +82,6 @@ async function main(): Promise<void> {
 
   /** Игра начинается по кнопке, чтобы у всех был один старт. */
   let gameStarted = false;
-  const elStatus = document.getElementById('status') as HTMLElement;
   const elHint = document.getElementById('hint') as HTMLElement;
   const elObjective = document.getElementById('objective') as HTMLElement;
 
@@ -115,6 +117,36 @@ async function main(): Promise<void> {
   const tunnel = buildTunnel(textures);
   const platform = buildPlatform(textures);
   scene.add(cab.group, tunnel.group, platform.group);
+
+  /** Где искать плафоны: вагон и три локации. Гасим и зажигаем их по имени. */
+  const lampRoots: THREE.Object3D[] = [chunks.group, cab.group, tunnel.group, platform.group];
+
+  interface LocationLight {
+    light: THREE.PointLight;
+    /** Цвет из подсказки: к нему подмешивается оттенок режима. */
+    base: THREE.Color;
+    /** Яркость из подсказки: её масштабирует общий уровень света. */
+    intensity: number;
+  }
+
+  const locationLights: LocationLight[] = [];
+
+  // Свет локаций той же природы, что заливка вагона: точечный, с затуханием,
+  // без теней. Модули сами источников не создают — только подсказывают, где
+  // ставить, и подбирают яркость под этот рендер (в тоннеле ~30).
+  for (const loc of [cab, tunnel, platform]) {
+    const spots = (loc.group.userData.lightSpots as LightSpot[] | undefined) ?? [];
+    for (const spot of spots) {
+      const light = new THREE.PointLight(spot.color, 0, spot.distance, 2);
+      light.position.set(spot.x, spot.y, spot.z);
+      scene.add(light);
+      locationLights.push({ light, base: new THREE.Color(spot.color), intensity: spot.intensity });
+    }
+  }
+
+  /** Оттенки режимов: тёплое городское питание и холодный свет лампы. */
+  const WARM_LIGHT = new THREE.Color(0xffe4b8);
+  const COLD_LIGHT = new THREE.Color(0x9dc2ff);
 
   /** Дверь в кабину открыта — проход свободен. */
   let cabOpen = false;
@@ -209,6 +241,8 @@ async function main(): Promise<void> {
   let lampPlaced = false;
   /** true — свет уже от бутылки с телефоном: холодный и тусклее, чем городской. */
   let lampMode = false;
+  /** Гул тоннеля: включается на входе за кабину и гаснет при возврате. */
+  let tunnelHumOn = false;
 
   /** Первое значение света после входа ставим сразу: иначе вагон вспыхивает
    *  и гаснет рывком, пока идёт плавный переход. */
@@ -251,23 +285,34 @@ async function main(): Promise<void> {
     lastAppliedLights = lightsValue;
     lastChunkVersion = chunks.version;
 
-    chunks.group.traverse((node) => {
-      if (node.name === 'lamp') {
-        const mesh = node as THREE.Mesh;
-        const material = mesh.material as THREE.MeshStandardMaterial;
-        // до блэкаута плафоны тёплые, от лампы из бутылки — холодные
-        if (lampMode) material.emissive.setRGB(0.62, 0.78, 1).multiplyScalar(lightsValue * 0.9);
-        else material.emissive.setRGB(1, 0.97, 0.88).multiplyScalar(lightsValue * 0.9);
-        return;
-      }
+    for (const root of lampRoots) {
+      root.traverse((node) => {
+        if (node.name === 'lamp') {
+          const mesh = node as THREE.Mesh;
+          const material = mesh.material as THREE.MeshStandardMaterial;
+          // до блэкаута плафоны тёплые, от лампы из бутылки — холодные
+          if (lampMode) material.emissive.setRGB(0.62, 0.78, 1).multiplyScalar(lightsValue * 0.9);
+          else material.emissive.setRGB(1, 0.97, 0.88).multiplyScalar(lightsValue * 0.9);
+          return;
+        }
 
-      // после крафта света экраны у людей гаснут
-      if (node.name === 'phones' && phonesDimmed) {
-        const mesh = node as THREE.Mesh;
-        const material = mesh.material as THREE.MeshBasicMaterial;
-        material.color.setHex(0x2b3550);
-      }
-    });
+        // после крафта света экраны у людей гаснут
+        if (node.name === 'phones' && phonesDimmed) {
+          const mesh = node as THREE.Mesh;
+          const material = mesh.material as THREE.MeshBasicMaterial;
+          material.color.setHex(0x2b3550);
+        }
+      });
+    }
+
+    // Свет локаций. Общий уровень тот же, что у вагона: в блэкауте он ноль,
+    // и тоннель с платформой не светятся; после крафта холодный оттенок.
+    const tint = lampMode ? COLD_LIGHT : WARM_LIGHT;
+    for (const spot of locationLights) {
+      spot.light.intensity = spot.intensity * lightsValue;
+      spot.light.color.copy(spot.base).lerp(tint, 0.45);
+    }
+
     if (lampMode) {
       // свет от бутылки с телефоном: холодный, приглушённый
       ambient.intensity = 0.16 + lightsValue * 0.45;
@@ -302,6 +347,7 @@ async function main(): Promise<void> {
   /** Паника, доверие и воздух приходят с сервера: это состояние мира. */
   function setStats(panic: number, trust: number, air: number): void {
     worldPanic = panic;
+    soundscape.setPanic(panic);
     elPanic.textContent = String(panic);
     elTrust.textContent = String(trust);
     elAir.textContent = String(air);
@@ -323,6 +369,41 @@ async function main(): Promise<void> {
   const elPhone = document.getElementById('phone') as HTMLElement;
   const elPhoneNet = document.getElementById('phone-net') as HTMLElement;
   const elPhoneVideo = document.getElementById('phone-video') as HTMLVideoElement;
+
+  // PS1-экран телефона: видео декодируется как обычно (и звучит), но на экран
+  // выводим маленький canvas, растянутый без сглаживания — то же «зерно», что у мира.
+  const PHONE_W = 90;
+  const PHONE_H = 160;
+  const elPhoneScreen = document.createElement('canvas');
+  elPhoneScreen.width = PHONE_W;
+  elPhoneScreen.height = PHONE_H;
+  elPhoneScreen.style.cssText = [
+    'position:absolute',
+    'inset:7px',
+    'width:calc(100% - 14px)',
+    'height:calc(100% - 14px)',
+    'border-radius:18px',
+    'image-rendering:pixelated',
+    'background:#000',
+    'pointer-events:none',
+  ].join(';');
+  elPhoneVideo.style.opacity = '0';
+  elPhoneVideo.after(elPhoneScreen);
+  const phoneCtx = elPhoneScreen.getContext('2d');
+  if (phoneCtx) phoneCtx.imageSmoothingEnabled = false;
+
+  /** Кадр телефона в маленький буфер: видео портретное, режем по «cover». */
+  function drawPhoneFrame(): void {
+    if (!phoneCtx || elPhone.classList.contains('hidden')) return;
+    if (elPhoneVideo.readyState < 2 || elPhoneVideo.videoWidth === 0) return;
+
+    const vw = elPhoneVideo.videoWidth;
+    const vh = elPhoneVideo.videoHeight;
+    const scale = Math.max(PHONE_W / vw, PHONE_H / vh);
+    const sw = PHONE_W / scale;
+    const sh = PHONE_H / scale;
+    phoneCtx.drawImage(elPhoneVideo, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, PHONE_W, PHONE_H);
+  }
 
   const cutscene = new CutscenePlayer(
     camera,
@@ -414,9 +495,13 @@ async function main(): Promise<void> {
 
   const inventory = new Inventory();
   const hud = new Hud(inventory);
+  // панель администратора: оверлей, живёт отдельно от HUD; ручки идут в net
+  const admin = new AdminPanel((kind, value, flag) => net.adminSet(kind, value, flag));
   const pulse = new Pulse();
   // звук: блипы в духе Undertale, по одному на символ реплики
   const voices = new Voices();
+  // звуковая сцена: файлы тянем заранее, играть начинает сценарий и мир
+  soundscape.preload();
 
   /** Мысленный азарт толпы 0..1: выше паника — выше и злее голоса. */
   const mood = (): number => Math.max(0, Math.min(1, (worldPanic - 30) / 70));
@@ -605,6 +690,17 @@ async function main(): Promise<void> {
     return 'вагон · середина';
   }
 
+  /**
+   * Часть мира для сценария. Клиент только сообщает, где он; реагирует сервер.
+   * Платформу проверяем раньше тоннеля: она лежит слева от его стены и внутри
+   * тех же Z, отличается только по X.
+   */
+  function zoneAt(x: number, z: number): string {
+    if (x < -2.42 && x >= -9.2 && z <= -12.6) return 'platform';
+    if (z <= -12.6 && z >= -36.6) return 'tunnel';
+    return z < 0 ? 'car_a' : 'car_b';
+  }
+
   /* ───────────────────────────── картинка ───────────────────────────── */
 
   function targetSize(): { width: number; height: number } {
@@ -628,6 +724,9 @@ async function main(): Promise<void> {
   resize();
 
   /* ───────────────────────────── сеть ───────────────────────────── */
+
+  /** Последний замер ping: уходит на сервер вместе с fps в панель админа. */
+  let lastPingMs = 0;
 
   const net = new Net(session.token, {
     onState: (state) => {
@@ -706,6 +805,16 @@ async function main(): Promise<void> {
           return;
         case 'say':
           hud.say(String(data.text ?? ''), 6);
+          // объявление по громкой связи: сервер присылает звук вместе с текстом,
+          // поэтому каждый повтор звучит и не расходится с лентой.
+          // Дорожка (4,9 с) длиннее интервала повтора (4 с), поэтому перед
+          // каждым разом гасим её и запускаем заново — иначе второй повтор молчит.
+          if (data.sound) {
+            const name = String(data.sound) as SoundName;
+            const volume = Number(data.volume ?? 0.9);
+            soundscape.stop(name, 0.05);
+            window.setTimeout(() => soundscape.play(name, { volume }), 150);
+          }
           return;
         case 'objective':
           setObjective(String(data.text ?? ''));
@@ -774,6 +883,7 @@ async function main(): Promise<void> {
       if (done && typing) typing.done = true;
     },
     onPong: (ms) => {
+      lastPingMs = ms;
       elPing.textContent = `${Math.round(ms)} мс`;
     },
     onLobby: (players, started) => {
@@ -787,6 +897,9 @@ async function main(): Promise<void> {
         elLobbyPlayers.appendChild(item);
       }
       elLobbyStart.disabled = started;
+    },
+    onAdminState: (data) => {
+      admin.render(data as unknown as AdminState);
     },
     onAuthFailed: () => {
       // токен протух или отозван: чистим и просим войти заново
@@ -813,10 +926,18 @@ async function main(): Promise<void> {
 
   /** Рюкзак: пока открыт, мышь принадлежит панели, а не камере. */
   let bagOpen = false;
+  /** Панель администратора: пока открыта, камера стоит, курсор свободен. */
+  let adminOpen = false;
 
   function setBag(open: boolean): void {
     bagOpen = open;
     hud.setBagOpen(open);
+    if (open) document.exitPointerLock();
+  }
+
+  function setAdmin(open: boolean): void {
+    adminOpen = open;
+    admin.setOpen(open);
     if (open) document.exitPointerLock();
   }
 
@@ -859,6 +980,18 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (event.code === 'Escape' && adminOpen) {
+      setAdmin(false);
+      return;
+    }
+
+    // F3 — панель администратора (раньше открывала отладочную плашку)
+    if (event.code === 'F3') {
+      event.preventDefault();
+      setAdmin(!adminOpen);
+      return;
+    }
+
     if (event.code === 'KeyT' && !chatOpen && !bagOpen) {
       if (nearNpc) {
         // без этого нажатая буква (t или «е» в русской раскладке) попадает в поле
@@ -875,12 +1008,7 @@ async function main(): Promise<void> {
     }
 
     // пока игрок печатает или роется в рюкзаке, игровые клавиши не работают
-    if (chatOpen || bagOpen) return;
-
-    if (event.code === 'F3') {
-      elStatus.classList.toggle('hidden');
-      return;
-    }
+    if (chatOpen || bagOpen || adminOpen) return;
 
     if (/^Digit[1-6]$/.test(event.code)) {
       // в нижней полоске выбирается ровно один предмет: им и работаем с миром
@@ -921,9 +1049,20 @@ async function main(): Promise<void> {
         // иначе после сцены камеру дёрнет
         cutscene.update(dt);
         input.consumeLook();
-      } else if (gameStarted && !chatOpen && !bagOpen) {
+      } else if (gameStarted && !chatOpen && !bagOpen && !adminOpen) {
         player.update(dt, input, walkColliders(), bounds);
       }
+
+      // гул тоннеля не запускаем и не гасим, а делаем громче/тише:
+      // после остановки поезда он уже играет тихо из интро
+      if (!tunnelHumOn && player.position.z < -12.5) {
+        tunnelHumOn = true;
+        soundscape.setChannelVolume('tunnelWind', 0.3, 2.5);
+      } else if (tunnelHumOn && player.position.z > -10) {
+        tunnelHumOn = false;
+        soundscape.setChannelVolume('tunnelWind', 0.11, 2);
+      }
+
       chunks.update(player.position.z);
 
       // ближайший персонаж: подсказка «T — поговорить»
@@ -981,7 +1120,7 @@ async function main(): Promise<void> {
       }
 
       // сообщаем серверу, когда игрок переходит в другую часть мира
-      const zone = player.position.z < 0 ? 'car_a' : 'car_b';
+      const zone = zoneAt(player.position.x, player.position.z);
       if (zone !== lastZone) {
         lastZone = zone;
         net.sendZone(zone);
@@ -1039,6 +1178,9 @@ async function main(): Promise<void> {
         camera.position.y += (Math.random() - 0.5) * shake;
       }
 
+      // телефон показывает не видео, а пиксельный кадр из него
+      drawPhoneFrame();
+
       post.render(renderer, scene, camera, elapsed);
       void alpha;
     },
@@ -1050,6 +1192,13 @@ async function main(): Promise<void> {
     elChunks.textContent = `${stats.loadedChunks} из ${stats.totalChunks}`;
     elMem.textContent = `${stats.loadedMb} из ${stats.totalMb} МБ · ${stats.loadedPercent}%`;
   }, 500);
+
+  // раз в секунду: свои fps и ping — сервер собирает их в таблицу панели.
+  // Ping уже измеряется через PING/PONG, отдельного замера не заводим.
+  const statsTimer = setInterval(() => {
+    net.sendClientStats(loop.fps(), lastPingMs);
+    if (admin.open) net.requestAdmin();
+  }, 1000);
 
   window.__game = {
     player,
@@ -1106,6 +1255,7 @@ async function main(): Promise<void> {
   addEventListener('beforeunload', () => {
     loop.stop();
     clearInterval(fpsTimer);
+    clearInterval(statsTimer);
     input.dispose();
     net.close();
     remotePlayers.dispose();

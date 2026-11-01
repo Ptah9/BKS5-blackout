@@ -40,6 +40,20 @@ const PAPER = wrap(`
   </g>
 `);
 
+// Шина: два журнала, стянутые ремнём. Узнаётся по пряжке, а не по форме.
+const SPLINT = wrap(`
+  <g fill="none" stroke="#c9c2b0" stroke-width="3" stroke-linejoin="round">
+    <rect x="15" y="16" width="15" height="32" rx="3" transform="rotate(-7 23 32)" fill="#3a372e"/>
+    <rect x="34" y="16" width="15" height="32" rx="3" transform="rotate(7 41 32)" fill="#332f28"/>
+    <path d="M19 24h7M19 30h7M38 24h7M38 30h7" stroke="#8e8a7c"/>
+  </g>
+  <g stroke-linejoin="round">
+    <path d="M12 37h40" stroke="#6b4a2f" stroke-width="6" stroke-linecap="round"/>
+    <rect x="27" y="31" width="11" height="11" rx="2" fill="#20242a" stroke="#9aa4ae" stroke-width="2"/>
+    <path d="M32 34v5" stroke="#9aa4ae" stroke-width="2"/>
+  </g>
+`);
+
 const LAMP = wrap(`
   <g>
     <circle cx="32" cy="30" r="16" fill="#1d3557" opacity="0.55"/>
@@ -54,6 +68,7 @@ export const ITEM_ICONS: Record<string, string> = {
   phone: PHONE,
   candy: CANDY,
   paper: PAPER,
+  splint: SPLINT,
   flashlight: LAMP,
   medkit: wrap(`
     <g fill="none" stroke="#f0a9a9" stroke-width="3" stroke-linejoin="round">

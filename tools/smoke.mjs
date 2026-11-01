@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Дымовой тест M2: сервер живой, вход работает, токен проверяется,
  * мир рассылает позиции, второй игрок виден первому.
  *
@@ -8,6 +8,8 @@
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocket } from 'ws';
+
+import { PROTOCOL_VERSION } from '../shared/protocol.js';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // свой же локальный сертификат
 
@@ -83,7 +85,7 @@ function connect(token) {
     const state = { ws, welcome: null, snapshot: null, players: null };
     const timer = setTimeout(() => resolve(state), 4000);
 
-    ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', v: 1, token })));
+    ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', v: PROTOCOL_VERSION, token })));
     ws.on('message', (raw) => {
       const msg = JSON.parse(String(raw));
       if (msg.t === 'welcome') state.welcome = msg;
@@ -109,7 +111,7 @@ check('снапшот при входе', Boolean(first.snapshot?.self), first.s
 const anonymous = await new Promise((resolve) => {
   const ws = new WebSocket(WS_URL);
   const timer = setTimeout(() => resolve({ closed: false }), 4000);
-  ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', v: 1, token: null })));
+  ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', v: PROTOCOL_VERSION, token: null })));
   ws.on('close', (code) => {
     clearTimeout(timer);
     resolve({ closed: true, code });

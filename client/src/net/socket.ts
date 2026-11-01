@@ -22,6 +22,7 @@ interface Handlers {
   onNpcReply?: (id: string, delta: string, done: boolean) => void;
   onLobby?: (players: string[], started: boolean) => void;
   onPong?: (rttMs: number) => void;
+  onAdminState?: (data: Record<string, unknown>) => void;
   onAuthFailed?: () => void;
 }
 
@@ -86,6 +87,27 @@ export class Net {
   sendZone(chunk: string): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({ t: MSG.ZONE, chunk }));
+  }
+
+  /**
+   * Свои fps и ping раз в секунду. Ping — тот же замер, что ходит через
+   * PING/PONG: сервер сам его не считает, поэтому прикладываем к fps.
+   */
+  sendClientStats(fps: number, ping: number): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.CLIENT_STATS, fps: Math.round(fps), ping: Math.round(ping) }));
+  }
+
+  /** Панель администратора: попросить срез мира. Ответ — onAdminState. */
+  requestAdmin(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.ADMIN }));
+  }
+
+  /** Ручка панели: паника/доверие (0–100), свет (0–1), флаг (value 1/0). */
+  adminSet(kind: 'panic' | 'trust' | 'lights' | 'flag', value: number, flag?: string): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.ADMIN_SET, kind, value, flag: flag ?? null }));
   }
 
   /** Сказать персонажу. Ответ придёт потоком через onNpcReply. */  say(npcId: string, text: string): void {
@@ -164,6 +186,10 @@ export class Net {
 
       case MSG.LOBBY:
         this.handlers.onLobby?.((msg.players as string[]) ?? [], Boolean(msg.started));
+        return;
+
+      case MSG.ADMIN_STATE:
+        this.handlers.onAdminState?.((msg.data as Record<string, unknown>) ?? {});
         return;
 
       case MSG.PLAYERS:

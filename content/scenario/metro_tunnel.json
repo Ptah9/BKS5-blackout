@@ -18,6 +18,13 @@
       "id": "dark",
       "text": "Слишком темно. С этим надо что-то делать.",
       "until": "has_light"
+    },
+    {
+      "at": 330,
+      "do": "thought",
+      "id": "flicker",
+      "text": "Впереди, в тоннеле, мигает фонарь. Ровно, как будто зовёт.",
+      "until": "driver_found"
     }
   ],
   "triggers": [
@@ -131,6 +138,83 @@
       "once": true,
       "do": "objective",
       "text": "Цепочка пошла: впереди ты, за тобой дети, старики, остальные"
+    },
+    {
+      "on": "flag",
+      "flag": "signal_no_answer",
+      "once": true,
+      "do": "thought",
+      "id": "rail_live",
+      "text": "Трубка молчит, значит рельс под напряжением. Мне так сука страшно."
+    },
+    {
+      "on": "flag",
+      "flag": "lamp_fake",
+      "once": true,
+      "do": "say",
+      "text": "Мигал не машинист: фонарь у него разбит, а лампа на стене прикручена стяжками."
+    },
+    {
+      "on": "flag",
+      "flag": "driver_found",
+      "once": true,
+      "do": "thought",
+      "id": "driver_hurt",
+      "text": "Машинист. Нога вывернута, в руке разбитый фонарь — сам он не встанет.",
+      "until": "driver_helped"
+    },
+    {
+      "on": "flag",
+      "flag": "driver_found",
+      "once": true,
+      "do": "objective",
+      "text": "Помочь машинисту"
+    },
+    {
+      "on": "flag",
+      "flag": "driver_helped",
+      "once": true,
+      "do": "say",
+      "text": "Машинист перевязан. Он просит только об одном: не оставлять его тут одного."
+    },
+    {
+      "on": "flag",
+      "flag": "driver_splinted",
+      "once": true,
+      "do": "thought",
+      "id": "needs_bandage",
+      "text": "Шина держит. Теперь бы перевязать — аптечка осталась в кабине.",
+      "until": "driver_helped"
+    },
+    {
+      "on": "flag",
+      "flag": "driver_guarded",
+      "once": true,
+      "do": "say",
+      "text": "Обходчик снимает куртку и садится рядом. Дальше ты идёшь один."
+    },
+    {
+      "on": "flag",
+      "flag": "driver_guarded",
+      "once": true,
+      "do": "objective",
+      "text": "Искать настоящий выход из тоннеля"
+    },
+    {
+      "on": "flag",
+      "flag": "false_exit_seen",
+      "once": true,
+      "do": "thought",
+      "id": "false_exit",
+      "text": "Замуровано наглухо: воздух не идёт, сквозняка нет. Это не выход.",
+      "until": "chain_ready"
+    },
+    {
+      "on": "flag",
+      "flag": "chalk_seen",
+      "once": true,
+      "do": "say",
+      "text": "Те же штрихи, что у стрелки. Кто-то звал сюда нарочно."
     }
   ]
 }

@@ -230,8 +230,13 @@ const radioTimers = [];
 function startRadio({ text, repeats = 4, interval = 4 }) {
   for (let i = 1; i <= repeats; i++) {
     radioTimers.push(setTimeout(() => {
-      // сама реплика — мгновенная: она звучит и затихает
-      broadcast({ kind: 'say', data: { text: `По вагону: «${text}»` } });
+      // сама реплика — мгновенная: она звучит и затихает.
+      // Звук едет вместе с текстом: клиент не повторяет таймер, а играет
+      // дорожку ровно на каждый повтор объявления.
+      broadcast({
+        kind: 'say',
+        data: { text: `По вагону: «${text}»`, sound: 'intercom', volume: 0.9 },
+      });
 
       if (i === 2) {
         setTimeout(() => broadcast({
@@ -298,6 +303,15 @@ const scenario = Scenario.load(join(ROOT, 'content', 'scenario', 'metro_tunnel.j
   log,
   broadcast,
 });
+
+/**
+ * Какие флаги можно дёргать из панели: те, что вообще упомянуты в контенте.
+ * Так ручка не может завести флаг, которого мир не знает.
+ */
+const KNOWN_FLAGS = new Set([
+  ...props.flatMap((prop) => (prop.verbs ?? []).map((verb) => verb.flag)).filter(Boolean),
+  ...(scenario.definition?.triggers ?? []).map((trigger) => trigger.flag).filter(Boolean),
+]);
 
 /* ───────────────────────────── HTTP ───────────────────────────── */
 
@@ -612,6 +626,9 @@ function attachWebSocket(server) {
             z: saved?.z ?? WORLD.spawnZ,
             yaw: saved?.yaw ?? 0,
             inventory,
+            // для панели администратора: клиент присылает сам раз в секунду
+            fps: 0,
+            ping: 0,
           };
 
           // одно соединение на игрока: старое закрываем
@@ -662,7 +679,9 @@ function attachWebSocket(server) {
           }));
 
           // что уже взяли и какие флаги стоят: чтобы опоздавший не видел
-          // унесённые предметы и не жал на открытую дверь
+          // унесённые предметы и не жал на открытую дверь.
+          // Флаги берём все из базы: жёсткий список отставал от сценария, и
+          // опоздавший видел у машиниста уже сделанные действия заново.
           ws.send(JSON.stringify({
             t: MSG.EVENT,
             kind: 'world_state',
@@ -670,9 +689,10 @@ function attachWebSocket(server) {
               taken: props
                 .filter((prop) => store.getFlag(`taken_${prop.id}`) === '1')
                 .map((prop) => prop.id),
-              flags: ['cab_open', 'window_open', 'has_light', 'cab_papered', 'announcer_off', 'window_flag'].filter(
-                (flag) => store.getFlag(flag) === '1',
-              ),
+              flags: store
+                .allFlags()
+                .filter((row) => row.value === '1')
+                .map((row) => row.key),
             },
           }));
 
@@ -817,23 +837,35 @@ function attachWebSocket(server) {
             // запись выключили — она больше не играет
             if (verb.flag === 'announcer_off') stopRadio();
 
-            // цепочка пошла — смотрим, чем кончилась ночь
+            // цепочка пошла — смотрим, чем кончилась ночь.
+            // E02 «машиниста не забрали» — по флагам машиниста, а не «по умолчанию»:
+            // если его не нашли и не помогали, это не его финал.
             if (verb.flag === 'chain_ready') {
+              const peopleOut =
+                store.getFlag('people_returned') === '1' && store.getFlag('baba_saved') === '1';
+              const driverHelped =
+                store.getFlag('driver_guarded') === '1' || store.getFlag('driver_helped') === '1';
+
               const ending =
                 store.getFlag('ded_robbed') === '1'
                   ? {
                       id: 'ending_ded',
                       text: 'Дед сплёвывает на рельсы, вскакивает на велосипед и уезжает в тоннель один: «Бездари! Никакой дисциплины!»',
                     }
-                  : store.getFlag('people_returned') === '1' && store.getFlag('baba_saved') === '1'
+                  : peopleOut
                     ? {
                         id: 'ending_best',
                         text: 'Ты выходишь на платформу первым и оборачиваешься, чтобы подать руку следующему. За спиной один за другим поднимаются люди.',
                       }
-                    : {
-                        id: 'ending_driver',
-                        text: 'Темнота, и в ней мигает фонарь: на банкетке остались двое. — Помощь придёт? — Придёт. Жди.',
-                      };
+                    : driverHelped
+                      ? {
+                          id: 'ending_driver',
+                          text: 'Темнота, и в ней мигает фонарь: на банкетке остались двое. — Помощь придёт? — Придёт. Жди.',
+                        }
+                      : {
+                          id: 'ending_alone',
+                          text: 'Ты выходишь на платформу один. За спиной гаснет последний фонарь, и в тоннеле больше никого.',
+                        };
 
               log(`финал: ${ending.id}`);
               broadcast({ kind: 'ending', data: ending });
@@ -887,7 +919,11 @@ function attachWebSocket(server) {
             kind: 'prop',
             data: { id: prop.id, verb: verb.id, text: verb.text },
           }));
-          scenario.fire('interact', { id: prop.id, verb: verb.id });
+          scenario.fire('interact', {
+            id: prop.id,
+            verb: verb.id,
+            item: String(msg.item ?? '') || null,
+          });
           return;
         }
 
@@ -950,6 +986,59 @@ function attachWebSocket(server) {
             clientTime: msg.clientTime,
             serverTime: Date.now(),
           }));
+          return;
+        }
+
+        case MSG.CLIENT_STATS: {
+          if (!client) return;
+          // это диагностика, а не состояние мира: держим числа разумными
+          const fps = Number(msg.fps);
+          const ping = Number(msg.ping);
+          if (Number.isFinite(fps)) client.fps = Math.max(0, Math.min(1000, Math.round(fps)));
+          if (Number.isFinite(ping)) client.ping = Math.max(0, Math.min(60000, Math.round(ping)));
+          return;
+        }
+
+        case MSG.ADMIN: {
+          if (!client) return;
+          ws.send(JSON.stringify({ t: MSG.ADMIN_STATE, data: adminState() }));
+          return;
+        }
+
+        // ручки панели: значения проверяются здесь, клиенту не верим
+        case MSG.ADMIN_SET: {
+          if (!client) return;
+
+          const kind = String(msg.kind ?? '');
+          const value = Number(msg.value);
+
+          if (kind === 'panic' || kind === 'trust') {
+            if (!Number.isFinite(value)) return;
+            const target = Math.max(0, Math.min(100, Math.round(value)));
+            changeStat(kind, target - stats[kind]);
+            return;
+          }
+
+          if (kind === 'lights') {
+            if (!Number.isFinite(value)) return;
+            const level = Math.max(0, Math.min(1, value));
+            // тот же путь, что у верба lights: состояние сценария + рассылка
+            scenario.state.lights = level;
+            broadcast({ kind: 'lights', data: { value: level } });
+            log(`админ: свет ${level}`);
+            return;
+          }
+
+          if (kind === 'flag') {
+            const flag = String(msg.flag ?? '');
+            if (!KNOWN_FLAGS.has(flag)) return;
+            const on = Boolean(value);
+            store.setFlag(flag, on ? '1' : '0');
+            dropNotesByFlag(flag);
+            broadcast({ kind: 'flag', data: { flag, value: on } });
+            if (on) scenario.fire('flag', { flag });
+            log(`админ: флаг ${flag} = ${on ? '1' : '0'}`);
+          }
           return;
         }
 
@@ -1037,6 +1126,38 @@ async function respond(ws, client, npc, text) {
 
 /* ───────────────────────────── запуск ───────────────────────────── */
 
+/** Срез для панели администратора: только чтение, мир не меняется. */
+function adminState() {
+  let dbKb = 0;
+  try {
+    dbKb = Math.round(statSync(DB_FILE).size / 1024);
+  } catch {
+    // базы ещё нет — показываем ноль, панель не должна падать
+  }
+
+  return {
+    server: {
+      uptime: Math.round(process.uptime()),
+      players: clients.size,
+      ticks: ticksPerSecond,
+      rssMb: Math.round(process.memoryUsage().rss / (1024 * 1024)),
+      dbKb,
+    },
+    clients: [...clients.values()].map((item) => ({
+      name: item.name,
+      ping: item.ping ?? 0,
+      fps: item.fps ?? 0,
+    })),
+    stats: { panic: stats.panic, trust: stats.trust, air: stats.air },
+    lights: scenario.state.lights,
+    npcs: npcs.map((npc) => ({ id: npc.id, name: npc.name })),
+    // все известные флаги, а не только поднятые: по ним и кликают в панели
+    flags: [...KNOWN_FLAGS]
+      .sort()
+      .map((key) => ({ key, value: store.getFlag(key) ?? '0' })),
+  };
+}
+
 function createServer() {
   if (DEV) {
     return { server: createHttpServer(handleHttp), scheme: 'http' };
@@ -1060,14 +1181,23 @@ const { server, scheme } = createServer();
 attachWebSocket(server);
 
 // дельты позиций 20 раз в секунду
+let tickCount = 0;
+let ticksPerSecond = 0;
 setInterval(() => {
   if (clients.size === 0) return;
+  tickCount++;
   const list = [...clients.values()].map(toView);
   const payload = JSON.stringify({ t: MSG.PLAYERS, list });
   for (const client of clients.values()) {
     if (client.ws.readyState === client.ws.OPEN) client.ws.send(payload);
   }
 }, 1000 / TICK.STATE_HZ);
+
+// для панели администратора: сколько тиков прошло за последнюю секунду
+setInterval(() => {
+  ticksPerSecond = tickCount;
+  tickCount = 0;
+}, 1000);
 
 // запись состояния в базу: раз в секунду
 setInterval(() => {
@@ -1079,12 +1209,27 @@ setInterval(() => {
 // сценарий: четыре раза в секунду проверяем, не пришло ли время очередному шагу
 setInterval(() => scenario.tick(), 250);
 
-// духота: начинается после того, как нашли свет, и прекращается, когда открыли форточку
+// духота: начинается после того, как нашли свет, и прекращается, когда открыли форточку.
+// Имена флагов берём из данных: у верба, который даёт воздух, флаг и есть
+// признак открытой створки. Сейчас это window_open, но форточек несколько и
+// контент может переименовать флаг — тогда расход пойдёт за данными.
+const AIR_FLAGS = [
+  ...new Set(
+    props
+      .flatMap((prop) => prop.verbs ?? [])
+      .filter((verb) => verb.air)
+      .map((verb) => verb.flag)
+      .filter(Boolean),
+  ),
+];
+if (AIR_FLAGS.length === 0) AIR_FLAGS.push('window_open');
+
 let airTick = 0;
 setInterval(() => {
   if (!scenario.running || clients.size === 0) return;
   if (store.getFlag('has_light') !== '1') return;
-  if (store.getFlag('window_open') === '1') return;
+  // форточка открыта — дышать есть чем, расход стоит
+  if (AIR_FLAGS.some((flag) => store.getFlag(flag) === '1')) return;
 
   airTick++;
   if (airTick % 2 === 0 && stats.air > 0) changeStat('air', -1);

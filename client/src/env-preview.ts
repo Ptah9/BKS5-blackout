@@ -6,8 +6,11 @@
  * свой свет и своя камера, поэтому геометрию можно крутить, ничего не ломая.
  *
  * Управление: клик — захват мыши, WASD — полёт, Space/Ctrl — вверх/вниз,
- * Shift — быстрее. 1–4 — точки обзора, L — свет, P — пост-обработка,
+ * Shift — быстрее. 1–6 — точки обзора, L — свет, P — пост-обработка,
  * C — коллайдеры и границы, H — панель.
+ *
+ * `?people=1` — горстка персонажей в тоннеле; камера играет роль игрока,
+ * по ней и проверяются повороты головы (см. блок «люди» ниже).
  *
  * Любую точку можно задать ссылкой, это нужно для скриншотов:
  *   /env-preview.html?cam=0,1.6,-11&yaw=0&pitch=-0.1&lights=0&post=0
@@ -22,6 +25,8 @@ import type { LightSpot, Location } from './world/location';
 import { buildCab } from './world/cab';
 import { buildPlatform } from './world/platform';
 import { buildTunnel } from './world/tunnel';
+import { Characters } from './world/characters';
+import { Passengers, type PassengerSpot } from './world/passengers';
 
 const params = new URLSearchParams(location.search);
 const canvas = document.getElementById('view') as HTMLCanvasElement;
@@ -160,6 +165,37 @@ function buildDebug(): void {
 buildDebug();
 if (params.get('debug') === '1') debugGroup.visible = true;
 
+/* ───────────────────────────── люди ───────────────────────────── */
+
+/**
+ * `?people=1` — горстка персонажей в тоннеле рядом с кабиной. Камера
+ * предпросмотра при этом играет роль игрока: персонажи видят её так же,
+ * как в игре видят камеру из main.ts. Нужно, чтобы смотреть повороты
+ * головы глазами, не запуская игру.
+ */
+const peopleMode = params.get('people') === '1';
+let crowd: Passengers | null = null;
+
+const CROWD_SPOTS: PassengerSpot[] = [
+  { x: -1.5, z: -14.4, yaw: 0.12, pose: 'stand' },
+  { x: -0.45, z: -15.3, yaw: -0.06, pose: 'stand' },
+  { x: 0.7, z: -14.9, yaw: 0.3, pose: 'stand' },
+  { x: 1.7, z: -16.1, yaw: -0.22, pose: 'stand' },
+  { x: -1.2, z: -17.4, yaw: 0.08, pose: 'stand' },
+  { x: 0.15, z: -18.2, yaw: 0.0, pose: 'stand' },
+  { x: -0.9, z: -19.4, yaw: -0.35, pose: 'stand' },
+];
+
+if (peopleMode) {
+  scene.add(camera);
+  const characters = new Characters();
+  void characters.load().then(() => {
+    crowd = new Passengers(CROWD_SPOTS, characters);
+    scene.add(crowd.group);
+    (window as unknown as { crowdReady?: boolean }).crowdReady = true;
+  });
+}
+
 /* ───────────────────────────── картинка ───────────────────────────── */
 
 function targetSize(): { width: number; height: number } {
@@ -202,6 +238,7 @@ const VIEWS: Record<string, View> = {
   arch: { pos: [-0.6, 1.6, -31.0], yaw: 1.4, pitch: 0, label: 'тоннель · проём на платформу' },
   platform: { pos: [-3.3, 1.6, -31.0], yaw: 1.45, pitch: -0.02, label: 'платформа · зал' },
   exit: { pos: [-5.6, 1.6, -32.6], yaw: 0, pitch: 0, label: 'платформа · выход' },
+  crowd: { pos: [0, 1.6, -13.0], yaw: 0, pitch: -0.02, label: 'тоннель · люди (нужен ?people=1)' },
   overview: { pos: [7, 11, -8], yaw: 0.9, pitch: -0.62, label: 'обзор' },
 };
 
@@ -260,6 +297,9 @@ addEventListener('keydown', (event) => {
       break;
     case 'Digit5':
       applyView(VIEWS.overview);
+      break;
+    case 'Digit6':
+      applyView(VIEWS.crowd);
       break;
     case 'KeyL':
       lightsOn = !lightsOn;
@@ -355,7 +395,7 @@ function updateHud(dt: number): void {
     `x ${position.x.toFixed(2)}  y ${position.y.toFixed(2)}  z ${position.z.toFixed(2)}\n` +
     `yaw ${yaw.toFixed(2)}  pitch ${pitch.toFixed(2)}  ${fps} fps\n` +
     `\n` +
-    `<b>1</b> кабина  <b>2</b> тоннель  <b>3</b> проём  <b>4</b> платформа  <b>5</b> обзор\n` +
+    `<b>1</b> кабина  <b>2</b> тоннель  <b>3</b> проём  <b>4</b> платформа  <b>5</b> обзор  <b>6</b> люди (?people=1)\n` +
     `<b>L</b> свет ${lightsOn ? 'вкл' : 'выкл'}  <b>P</b> пост ${postEnabled ? 'вкл' : 'выкл'}  ` +
     `<b>C</b> коллайдеры ${debugGroup.visible ? 'вкл' : 'выкл'}\n` +
     `<b>WASD</b> полёт  <b>Space/Ctrl</b> вверх/вниз  <b>Shift</b> быстрее  <b>клик</b> мышь  <b>H</b> панель`;
@@ -385,23 +425,77 @@ function move(dt: number): void {
   syncCamera();
 }
 
+function draw(elapsed: number): void {
+  if (postEnabled) post.render(renderer, scene, camera, elapsed);
+  else renderer.render(scene, camera);
+}
+
 function tick(): void {
   const dt = Math.min(0.05, clock.getDelta());
   const elapsed = clock.elapsedTime;
 
   move(dt);
   updateHud(dt);
+  crowd?.update(dt);
 
-  if (postEnabled) post.render(renderer, scene, camera, elapsed);
-  else renderer.render(scene, camera);
-
+  draw(elapsed);
   requestAnimationFrame(tick);
 }
 
 tick();
 
+/* ───────────────────────────── ручки для проверки ───────────────────────────── */
+
+/** Поставить камеру в точку: так снимаются кадры «сбоку», «сзади» и т.п. */
+function place(x: number, y: number, z: number, viewYaw: number, viewPitch: number): void {
+  position.set(x, y, z);
+  yaw = viewYaw;
+  pitch = viewPitch;
+  syncCamera();
+}
+
+/** Прокрутить персонажей вперёд без ожидания кадров: поза на заданной секунде. */
+function stepSim(seconds: number): void {
+  if (!crowd) return;
+  const step = 1 / 30;
+  for (let t = 0; t < seconds; t += step) crowd.update(step);
+  draw(clock.elapsedTime);
+}
+
+/** Повороты голов: числами, чтобы проверять пределы и плавность без глаз. */
+function heads(): Array<{ x: number; z: number; yaw: number; pitch: number }> {
+  const out: Array<{ x: number; z: number; yaw: number; pitch: number }> = [];
+  if (!crowd) return out;
+  const p = new THREE.Vector3();
+  crowd.group.traverse((node) => {
+    if (!(node instanceof THREE.Bone) || node.name !== 'head') return;
+    node.getWorldPosition(p);
+    out.push({
+      x: +p.x.toFixed(2),
+      z: +p.z.toFixed(2),
+      yaw: +node.rotation.y.toFixed(3),
+      pitch: +node.rotation.x.toFixed(3),
+    });
+  });
+  return out;
+}
+
 /** Ручки для отладки: менять свет и камеру, не пересобирая страницу. */
-(window as unknown as { env?: unknown }).env = { scene, camera, renderer, pointLights, ambient, hemi, locations, applyView, VIEWS };
+(window as unknown as { env?: unknown }).env = {
+  scene,
+  camera,
+  renderer,
+  pointLights,
+  ambient,
+  hemi,
+  locations,
+  applyView,
+  VIEWS,
+  place,
+  people: () => crowd,
+  step: stepSim,
+  heads,
+};
 
 /**
  * Снять текущий кадр файлом. Нужно для проверки геометрии без живого экрана:

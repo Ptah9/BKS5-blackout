@@ -80,6 +80,15 @@ export class Scenario {
       if (trigger.on === 'zone' && trigger.chunk !== payload.chunk) return;
       if (trigger.on === 'flag' && trigger.flag !== payload.flag) return;
 
+      // действие в мире: сверяем, с каким предметом и каким вербом его сделали,
+      // иначе первый же «осмотреть» сжигал бы чужой триггер
+      if (trigger.on === 'interact') {
+        const wantProp = trigger.id ?? trigger.prop;
+        if (wantProp && wantProp !== payload.id) return;
+        if (trigger.verb && trigger.verb !== payload.verb) return;
+        if (trigger.item && trigger.item !== payload.item) return;
+      }
+
       this.firedTriggers.add(index);
       this.emit(trigger);
     });

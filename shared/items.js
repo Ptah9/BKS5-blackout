@@ -17,6 +17,7 @@ export const ITEMS = Object.freeze({
   tube: { id: 'tube', name: 'Тубус с начертом', short: 'туб.' },
   pencil: { id: 'pencil', name: 'Карандаш', short: 'кар.' },
   drawing: { id: 'drawing', name: 'Доделанный начерт', short: 'нач.' },
+  splint: { id: 'splint', name: 'Шина из журналов', short: 'шин.' },
 });
 
 /** Что с чем соединяется. Порядок в паре не важен. */

@@ -76,6 +76,7 @@ export class Store {
       dropExpired: this.db.prepare('DELETE FROM sessions WHERE expires_at < ?'),
       loadState: this.db.prepare('SELECT x, z, yaw, inventory FROM state WHERE player_id = ?'),
       getFlag: this.db.prepare('SELECT value FROM world_flags WHERE key = ?'),
+      allFlags: this.db.prepare('SELECT key, value FROM world_flags'),
       setFlag: this.db.prepare(
         `INSERT INTO world_flags (key, value) VALUES (?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -141,6 +142,11 @@ export class Store {
 
   getFlag(key) {
     return this.q.getFlag.get(key)?.value ?? null;
+  }
+
+  /** Все флаги мира: позднему игроку нужны не только заранее перечисленные. */
+  allFlags() {
+    return this.q.allFlags.all();
   }
 
   setFlag(key, value) {
