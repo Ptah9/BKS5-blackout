@@ -1,6 +1,7 @@
 ﻿import * as THREE from 'three';
 
 import './style.css';
+import { Voices, presetFor, type VoicePreset } from './audio/voice';
 import { Input } from './core/input';
 import { startLoop } from './core/loop';
 import { RemotePlayers } from './game/remotePlayers';
@@ -44,6 +45,7 @@ declare global {
       fps: () => number;
       cutscene: CutscenePlayer;
       playCutscene: (id: string) => Promise<void>;
+      voices: Voices;
       npcCount: () => number;
       turn: (deg: number) => number;
       seat: (forward: number, up: number) => { forward: number; up: number } | null;
@@ -265,8 +267,12 @@ async function main(): Promise<void> {
     elObjective.classList.remove('hidden');
   }
 
+  /** Паника мира: голоса персонажей злее, когда всем страшно. */
+  let worldPanic = 20;
+
   /** Паника, доверие и воздух приходят с сервера: это состояние мира. */
   function setStats(panic: number, trust: number, air: number): void {
+    worldPanic = panic;
     elPanic.textContent = String(panic);
     elTrust.textContent = String(trust);
     elAir.textContent = String(air);
@@ -380,6 +386,11 @@ async function main(): Promise<void> {
   const inventory = new Inventory();
   const hud = new Hud(inventory);
   const pulse = new Pulse();
+  // звук: блипы в духе Undertale, по одному на символ реплики
+  const voices = new Voices();
+
+  /** Мысленный азарт толпы 0..1: выше паника — выше и злее голоса. */
+  const mood = (): number => Math.max(0, Math.min(1, (worldPanic - 30) / 70));
 
   /* ── персонажи и разговор ─────────────────────────────────────────── */
 
@@ -427,8 +438,51 @@ async function main(): Promise<void> {
   let nearNpc: RemotePlayer | null = null;
   let talkingTo: RemotePlayer | null = null;
   let chatOpen = false;
-  let subtitleText = '';
   let subtitleTimer = 0;
+
+  /**
+   * Печать реплики. Модель присылает текст пачками, а печатаем мы сами, по
+   * символу за такт голоса: тогда звук идёт ровно там, где появляются буквы,
+   * а не догоняет пачку задним числом.
+   */
+  interface Typing {
+    id: string;
+    name: string;
+    shown: string;
+    queue: string;
+    /** Накопленное время, мс. */
+    acc: number;
+    done: boolean;
+    preset: VoicePreset;
+  }
+  let typing: Typing | null = null;
+
+  function updateTyping(dt: number): void {
+    if (!typing) return;
+
+    // длинную реплику печатаем чуть быстрее, иначе хвост висит после ответа
+    const hurry = typing.queue.length > 80 ? 0.6 : 1;
+    const step = voices.step(typing.preset, mood()) * hurry;
+    typing.acc += dt * 1000;
+
+    let printed = false;
+    while (typing.queue.length > 0 && typing.acc >= step) {
+      typing.acc -= step;
+      const char = typing.queue[0];
+      typing.queue = typing.queue.slice(1);
+      typing.shown += char;
+      printed = true;
+      // блип на символ, включая пунктуацию: в игре пропускается только пробел
+      voices.speak(char, typing.preset, mood());
+    }
+
+    if (printed) elSubtitles.textContent = `${typing.name}: ${typing.shown}`;
+
+    if (typing.done && typing.queue.length === 0) {
+      subtitleTimer = 9;
+      typing = null;
+    }
+  }
 
   function openChat(npc: RemotePlayer): void {
     talkingTo = npc;
@@ -618,13 +672,27 @@ async function main(): Promise<void> {
         });
       });
     },
-    onNpcReply: (_id, delta, done) => {
+    onNpcReply: (id, delta, done) => {
       if (delta) {
-        subtitleText += delta;
-        elSubtitles.textContent = `${talkingTo?.name ?? '—'}: ${subtitleText}`;
+        // новая реплика или другой собеседник — начинаем печатать с чистого листа
+        if (!typing || typing.id !== id) {
+          voices.reset();
+          subtitleTimer = 0;
+          typing = {
+            id,
+            name: talkingTo?.name ?? '—',
+            shown: '',
+            queue: '',
+            acc: 0,
+            done: false,
+            preset: presetFor(id, talkingTo?.name),
+          };
+          elSubtitles.textContent = `${typing.name}: `;
+        }
+        typing.queue += delta;
         elSubtitles.classList.remove('hidden');
       }
-      if (done) subtitleTimer = 9;
+      if (done && typing) typing.done = true;
     },
     onPong: (ms) => {
       elPing.textContent = `${Math.round(ms)} мс`;
@@ -652,7 +720,15 @@ async function main(): Promise<void> {
   setInterval(() => net.ping(), 1000);
 
   // кнопка лобби: пока её не нажали, сценарий не идёт ни у кого
-  elLobbyStart.addEventListener('click', () => net.start());
+  elLobbyStart.addEventListener('click', () => {
+    // это первый уверенный жест — разрешаем браузеру звук
+    voices.unlock();
+    net.start();
+  });
+
+  // звук в браузере стартует только с жеста: ловим любой, дальше unlock дёшев
+  addEventListener('pointerdown', () => voices.unlock());
+  addEventListener('keydown', () => voices.unlock());
 
   /* ───────────────────────────── кадр ───────────────────────────── */
 
@@ -689,6 +765,13 @@ async function main(): Promise<void> {
     if (event.code === 'KeyI' && !chatOpen) {
       event.preventDefault();
       setBag(!bagOpen);
+      return;
+    }
+
+    // M — выключить/включить звук целиком: в общежитии играют ночью
+    if (event.code === 'KeyM' && !chatOpen) {
+      event.preventDefault();
+      voices.toggleMute();
       return;
     }
 
@@ -738,7 +821,10 @@ async function main(): Promise<void> {
     const npcId = npcIds[talkingTo.id - 1000];
     if (npcId) net.say(npcId, text);
 
-    subtitleText = '';
+    subtitleTimer = 0;
+    // прошлая печать больше не нужна: новый ответ начнёт свою
+    typing = null;
+    voices.reset();
     elSubtitles.textContent = `${talkingTo.name}: …`;
     elSubtitles.classList.remove('hidden');
     elChatInput.value = '';
@@ -851,6 +937,8 @@ async function main(): Promise<void> {
         if (subtitleTimer <= 0) elSubtitles.classList.add('hidden');
       }
 
+      updateTyping(frameDt);
+
       hud.tick(frameDt);
       hudAccumulator += frameDt;
       if (hudAccumulator >= 0.25) {
@@ -888,6 +976,8 @@ async function main(): Promise<void> {
     fps: () => loop.fps(),
     cutscene,
     playCutscene,
+    // отладка: голоса персонажей — по ним проверяется, что блипы вообще идут
+    voices,
     // отладка: сколько агентов пришло с сервера
     npcCount: () => npcEntities.length,
     /** Довернуть всех персонажей на градусы: подгонка направления без сборки. */
