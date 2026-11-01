@@ -13,6 +13,19 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 
+/** Сидящие модели: у них лицо нарисовано на общей текстуре, и оно пугает.
+ *  Им ставим плоский материал в тон вагону. */
+const FLAT_NPC = new Set(['sidit', 'npc_sit']);
+
+const FLAT_MATERIAL = new THREE.MeshStandardMaterial({ color: 0x39434f, roughness: 0.92 });
+
+function paintFlat(root: THREE.Object3D): void {
+  root.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) return;
+    node.material = FLAT_MATERIAL;
+  });
+}
+
 /** Имя модели → файл. Имена короткие: так они же лежат в данных сценария. */
 const FILES = {
   vladimir: 'vladimir.glb',
@@ -123,6 +136,7 @@ export class Characters {
     if (!prototype) return null;
     const model = cloneSkeleton(prototype);
     bindLooseMeshes(model);
+    if (FLAT_NPC.has(id)) paintFlat(model);
     return model;
   }
 }
