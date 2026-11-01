@@ -181,6 +181,8 @@ async function main(): Promise<void> {
   const characters = new Characters();
   /** Ссылка на пассажиров: нужна кнопке доворота на глаз. */
   let passengers: Passengers | null = null;
+  /** Места массовки: с ними тоже можно заговорить (без модели, одной фразой). */
+  let crowdSpots: PassengerSpot[] = [];
 
   // Пассажиры: расстановка в данных, модели — из charachters/*.glb.
   void Promise.all([
@@ -190,6 +192,7 @@ async function main(): Promise<void> {
   ])
     .then(([, passengersData, sceneryData]) => {
       const spots = (passengersData as { spots?: PassengerSpot[] } | null)?.spots ?? [];
+      crowdSpots = spots;
       if (spots.length > 0) {
         passengers = new Passengers(spots, characters);
         scene.add(passengers.group);
@@ -593,8 +596,8 @@ async function main(): Promise<void> {
       const data = (await response.json()) as CutsceneData;
       cutscene.start(data);
       elCutscene.classList.remove('hidden');
-      // рука с телефоном: персонаж поднимает его к глазам в интро
-      viewHand.holdPhone(id === 'intro_blackout');
+      // руку с телефоном в интро не показываем: она мешала кадру
+      viewHand.holdPhone(false);
       hud.say('');
     } catch (error) {
       console.info('[катсцена] не загрузилась:', id, error);
@@ -696,6 +699,8 @@ async function main(): Promise<void> {
     });
 
   let nearNpc: RemotePlayer | null = null;
+  /** Рядом и в поле взгляда сидит пассажир без ИИ: с ним тоже можно заговорить. */
+  let nearCrowd = false;
   let talkingTo: RemotePlayer | null = null;
   let chatOpen = false;
   /** Чат открыт для объявления в микрофон, а не для разговора с NPC. */
@@ -1192,6 +1197,10 @@ async function main(): Promise<void> {
         // без этого нажатая буква (t или «е» в русской раскладке) попадает в поле
         event.preventDefault();
         openChat(nearNpc);
+      } else if (nearCrowd) {
+        // массовка: без модели и памяти, сервер отвечает одной фразой
+        event.preventDefault();
+        net.say('crowd', '');
       }
       return;
     }
@@ -1322,27 +1331,49 @@ async function main(): Promise<void> {
       // дверь кабины машиниста: на петлях, следует за флагом cab_open
       setCabDoorOpen(worldFlags.has('cab_open'));
 
-      // ближайший персонаж: подсказка «T — поговорить»
-      let closest: RemotePlayer | null = null;
-      let bestDistance = 2.6;
+      // собеседник — тот, на кого смотрим: расстояние вторично
+      const forwardX = -Math.sin(player.facing);
+      const forwardZ = -Math.cos(player.facing);
+      const lookDistance = (x: number, z: number, radius: number): number | null => {
+        const dx = x - player.position.x;
+        const dz = z - player.position.z;
+        const distance = Math.hypot(dx, dz);
+        if (distance > radius) return null;
+        // косинус угла между взглядом и направлением на цель: 0.6 — ~53°
+        const dot = (dx * forwardX + dz * forwardZ) / Math.max(0.001, distance);
+        return dot >= 0.6 ? distance : null;
+      };
+
+      let closestNpc: RemotePlayer | null = null;
+      let crowdNear = false;
+      let bestDistance = 4;
       for (const npc of npcEntities) {
-        const distance = Math.hypot(npc.x - player.position.x, npc.z - player.position.z);
-        if (distance < bestDistance) {
+        const distance = lookDistance(npc.x, npc.z, 4);
+        if (distance !== null && distance < bestDistance) {
           bestDistance = distance;
-          closest = npc;
+          closestNpc = npc;
+          crowdNear = false;
         }
       }
-      nearNpc = closest;
-      elTalk.classList.toggle('hidden', !nearNpc || chatOpen);
+      for (const spot of crowdSpots) {
+        const distance = lookDistance(spot.x, spot.z, 3.2);
+        if (distance !== null && distance < bestDistance) {
+          bestDistance = distance;
+          closestNpc = null;
+          crowdNear = true;
+        }
+      }
+
+      nearNpc = closestNpc;
+      nearCrowd = crowdNear;
+      elTalk.classList.toggle('hidden', (!nearNpc && !nearCrowd) || chatOpen);
       if (nearNpc) elTalk.textContent = `T — поговорить: ${nearNpc.name}`;
+      else if (nearCrowd) elTalk.textContent = 'T — поговорить: пассажир';
 
       // ближайший предмет, на который смотрит игрок
       let closestProp: PropView | null = null;
       let closestVerb: PropVerb | null = null;
       let bestPropDistance = Infinity;
-
-      const forwardX = -Math.sin(player.facing);
-      const forwardZ = -Math.cos(player.facing);
 
       for (const prop of worldProps) {
         if (takenProps.has(prop.id)) continue;

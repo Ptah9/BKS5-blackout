@@ -74,6 +74,14 @@ const props = JSON.parse(readFileSync(join(ROOT, 'content', 'props.json'), 'utf8
 // Места в вагоне, на которые садятся игроки при старте: у каждого своё.
 const seats = JSON.parse(readFileSync(join(ROOT, 'content', 'seats.json'), 'utf8')).seats;
 
+// Реплики массовки: короткие, без модели и памяти. Файл кладёт content;
+// если его нет — временный список в коде.
+const CROWD_FILE = join(ROOT, 'content', 'crowd_lines.json');
+const crowdLines = existsSync(CROWD_FILE)
+  ? (JSON.parse(readFileSync(CROWD_FILE, 'utf8')).lines ?? [])
+  : ['Не сейчас.', 'Я не в духе.', 'Оставьте меня.'];
+
+
 /**
  * Два числа, которые двигают сюжет: паника и доверие (0–100).
  * Живут в базе, чтобы перезапуск сервера не обнулял состояние толпы.
@@ -1093,6 +1101,15 @@ function attachWebSocket(server) {
           if (!client || client.dead) return;
 
           const to = String(msg.to ?? '');
+
+          // массовка: без модели и памяти — одна короткая фраза из данных
+          if (to === 'crowd') {
+            const line = crowdLines[Math.floor(Math.random() * crowdLines.length)] ?? 'Не сейчас.';
+            broadcast({ kind: 'say', data: { text: `Пассажир: «${line}»` } });
+            log(`пассажир ответил: ${line}`);
+            return;
+          }
+
           const text = String(msg.text ?? '').trim().slice(0, 300);
           const npc = npcs.find((item) => item.id === to);
           if (!npc || !text) return;
