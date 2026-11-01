@@ -87,7 +87,7 @@ const crowdLines = existsSync(CROWD_FILE)
  * Живут в базе, чтобы перезапуск сервера не обнулял состояние толпы.
  */
 const stats = {
-  panic: Number(store.getFlag('panic') ?? 20),
+  panic: Number(store.getFlag('panic') ?? 60),
   trust: Number(store.getFlag('trust') ?? 50),
   air: Number(store.getFlag('air') ?? 100),
 };
@@ -382,10 +382,10 @@ function resetWorld() {
   // не трогать чужой файл store.js
   store.db.exec('DELETE FROM world_flags');
   store.db.exec('DELETE FROM state');
-  stats.panic = 20;
+  stats.panic = 60;
   stats.trust = 50;
   stats.air = 100;
-  store.setFlag('panic', 20);
+  store.setFlag('panic', 60);
   store.setFlag('trust', 50);
   store.setFlag('air', 100);
   announceUsed.clear();
@@ -1592,9 +1592,9 @@ setInterval(() => {
 let panicAccumulator = 0;
 setInterval(() => {
   if (!scenario.running || clients.size === 0) return;
-  if (store.getFlag('panic_running') !== '1') return;
 
-  // базовый рост вдвое медленнее: +1 раз в 6 секунд, а не в 3
+  // паника растёт с начала игры, а не с четвёртого повтора записи:
+  // стартовые 60 и медленный подъём, чтобы её успевали сбивать словами
   let rate = 0.5;
   if (store.getFlag('cab_papered') === '1') rate *= 0.6;
   if (store.getFlag('announcer_off') === '1') rate *= 0.5;
