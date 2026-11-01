@@ -837,6 +837,8 @@ function attachWebSocket(server) {
 
               log(`финал: ${ending.id}`);
               broadcast({ kind: 'ending', data: ending });
+              store.clearNpcMemory();
+              log('память диалогов NPC очищена');
             }
           }
 
