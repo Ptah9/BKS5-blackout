@@ -10,7 +10,6 @@ import * as THREE from 'three';
 
 import type { Box2 } from './collision';
 import { buildCar, CAR_HALF_LENGTH } from './car';
-import { buildTunnelSlice } from './tunnel';
 import type { Textures } from '../render/textures';
 
 /** Границы чанка по оси Z. */
@@ -27,27 +26,17 @@ export interface ChunkContent {
 }
 
 const CAR_LIMIT = CAR_HALF_LENGTH + 0.1;
-const TUNNEL_FROM = -30;
-const TUNNEL_TO = 30;
-const TUNNEL_SEGMENTS = 8;
-const SEGMENT = (TUNNEL_TO - TUNNEL_FROM) / TUNNEL_SEGMENTS;
 
+// Старые куски тоннеля выключены: теперь тоннель — отдельная локация
+// (world/tunnel.ts), они бы спорили с ней на участке −30…−12.6.
 export const CHUNKS: ChunkDef[] = [
   { id: 'car_a', zFrom: -CAR_LIMIT, zTo: 0 },
   { id: 'car_b', zFrom: 0, zTo: CAR_LIMIT },
-  ...Array.from({ length: TUNNEL_SEGMENTS }, (_, i) => ({
-    id: `tunnel_${String(i + 1).padStart(2, '0')}`,
-    zFrom: TUNNEL_FROM + i * SEGMENT,
-    zTo: TUNNEL_FROM + (i + 1) * SEGMENT,
-  })),
 ];
 
 function buildChunk(def: ChunkDef, tex: Textures): ChunkContent {
-  if (def.id.startsWith('car')) {
-    const car = buildCar(tex, def.zFrom, def.zTo);
-    return { object: car.group, colliders: car.colliders, phones: car.phones };
-  }
-  return { object: buildTunnelSlice(def.zFrom, def.zTo) };
+  const car = buildCar(tex, def.zFrom, def.zTo);
+  return { object: car.group, colliders: car.colliders, phones: car.phones };
 }
 
 /** Байты геометрии: сумма буферов атрибутов и индексов. */

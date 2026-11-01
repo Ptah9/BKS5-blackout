@@ -19,8 +19,10 @@ import { ensureSession, forgetSession } from './ui/login';
 import { ChunkManager } from './world/chunks';
 import { Characters, type CharacterId, type SceneryItem } from './world/characters';
 import { Passengers, type PassengerSpot } from './world/passengers';
-import { CAR_HALF_LENGTH, CAR_HALF_WIDTH, CAR_HEIGHT } from './world/car';
+import { CAR_HEIGHT } from './world/car';
 import { buildCab } from './world/cab';
+import { buildTunnel } from './world/tunnel';
+import { buildPlatform } from './world/platform';
 import { createPropMesh } from './world/propMeshes';
 import type { Box2 } from './world/collision';
 
@@ -108,17 +110,34 @@ async function main(): Promise<void> {
   const chunks = new ChunkManager(textures);
   scene.add(chunks.group);
 
-  // кабина машиниста: своя комната за передней дверью
+  // кабина, тоннель и платформа: окружение из отдельной ветки
   const cab = buildCab(textures);
-  scene.add(cab.group);
+  const tunnel = buildTunnel(textures);
+  const platform = buildPlatform(textures);
+  scene.add(cab.group, tunnel.group, platform.group);
+
   /** Дверь в кабину открыта — проход свободен. */
   let cabOpen = false;
+  /** Петля двери в кабину: её крутим, когда дверь открывают. */
+  const cabDoorHinge = cab.group.userData.door?.front as THREE.Group | undefined;
 
-  /** Коллайдеры текущего кадра: вагон, кабина и (пока закрыта) дверь. */
+  /** Проём в кабину перекрыт, пока дверь закрыта. */
+  const cabBlocker: Box2 = { minX: -0.45, maxX: 0.45, minZ: -10.05, maxZ: -9.85 };
+  /** Стены вагона: раньше игрока держали границы мира, теперь мир шире. */
+  const carWalls: Box2[] = [
+    { minX: -1.5, maxX: -1.33, minZ: -10, maxZ: 10 },
+    { minX: 1.33, maxX: 1.5, minZ: -10, maxZ: 10 },
+    { minX: -1.5, maxX: 1.5, minZ: 9.9, maxZ: 10.2 },
+  ];
+
+  /** Коллайдеры текущего кадра: вагон, кабина, тоннель, платформа и дверь. */
   const walkColliders = (): Box2[] => [
     ...chunks.colliders,
+    ...carWalls,
     ...cab.colliders,
-    ...(cabOpen ? [] : [cab.blocker]),
+    ...tunnel.colliders,
+    ...platform.colliders,
+    ...(cabOpen ? [] : [cabBlocker]),
   ];
 
   // Модели персонажей: пассажиры и агенты берут их отсюда.
@@ -382,11 +401,11 @@ async function main(): Promise<void> {
   }
 
   const bounds = {
-    minX: -CAR_HALF_WIDTH,
-    maxX: CAR_HALF_WIDTH,
-    // впереди за дверью кабина: она глубже вагона на 2.4 м
-    minZ: -CAR_HALF_LENGTH - 3.4,
-    maxZ: CAR_HALF_LENGTH,
+    // мир шире вагона: кабина, тоннель и платформа. Стены держат коллайдеры.
+    minX: -9.2,
+    maxX: 2.3,
+    minZ: -36.9,
+    maxZ: 9.7,
   };
 
   const player = new Player(camera);
@@ -989,8 +1008,8 @@ async function main(): Promise<void> {
       smoothLights(frameDt);
 
       // дверь кабины отходит в сторону, когда её открыли
-      if (cabOpen && cab.doorHinge.rotation.y > -1.9) {
-        cab.doorHinge.rotation.y = Math.max(-1.9, cab.doorHinge.rotation.y - frameDt * 2.2);
+      if (cabOpen && cabDoorHinge && cabDoorHinge.rotation.y > -1.9) {
+        cabDoorHinge.rotation.y = Math.max(-1.9, cabDoorHinge.rotation.y - frameDt * 2.2);
       }
 
       remotePlayers.update([...replica.step(frameDt, now), ...npcEntities]);
