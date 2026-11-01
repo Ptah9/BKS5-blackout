@@ -143,6 +143,8 @@ export class RemotePlayers {
     }
 
     const { sprite, texture } = makeLabel(player.name);
+    // у НПС имени над головой нет: у них id начиная с 1000, это не игроки
+    if (player.id >= 1000) sprite.visible = false;
     root.add(sprite);
     this.group.add(root);
 

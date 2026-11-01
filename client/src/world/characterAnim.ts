@@ -38,6 +38,18 @@ const NEIGHBOR_BEHIND = 0.95;
 /** Какую долю поворота забирает корпус, чтобы шея не работала одна. */
 const SPINE_SHARE = 0.2;
 
+/** Процедурная ходьба: выключается одной константой, если на экране плохо. */
+const WALK_ANIM = true;
+/** Длина шага, м: из неё частота. */
+const WALK_STRIDE = 1.6;
+/** Качание бедра на 1 м/с и предел, рад. */
+const WALK_SWING = 0.18;
+const WALK_SWING_MAX = 0.6;
+/** Колено подгибается на эту долю от качания бедра. */
+const WALK_KNEE = 0.7;
+/** Покачивание корпуса по высоте, м. */
+const WALK_BOB = 0.012;
+
 /** Сидячие модели: поворот головы включён, но мягче стоящих. */
 const SEATED_YAW = 0.45;
 const SEATED_PITCH_UP = 0.15;
@@ -120,6 +132,21 @@ function eyeOf(object: THREE.Object3D, out: THREE.Vector3): THREE.Vector3 {
 
 export class CharacterIdle {
   private head: THREE.Bone | null = null;
+  private thighL: THREE.Bone | null = null;
+  private thighR: THREE.Bone | null = null;
+  private kneeL: THREE.Bone | null = null;
+  private kneeR: THREE.Bone | null = null;
+  private hips: THREE.Bone | null = null;
+  private readonly baseThighL: number;
+  private readonly baseThighR: number;
+  private readonly baseKneeL: number;
+  private readonly baseKneeR: number;
+  private readonly baseHipsY: number;
+  /** Фаза шага и сглаженная скорость. */
+  private walkPhase = 0;
+  private walkSpeed = 0;
+  private readonly lastWalkPos = new THREE.Vector3();
+  private walkMeasured = false;
   private spine: THREE.Bone | null = null;
 
   private readonly baseHeadX: number;
@@ -183,6 +210,13 @@ export class CharacterIdle {
       const role = boneRole(node.name);
       if (role === 'head' && !this.head) this.head = node;
       if (role === 'spine' && !this.spine) this.spine = node;
+
+      const bone = node.name.toLowerCase();
+      if (bone === 'thighl') this.thighL = node;
+      if (bone === 'thighr') this.thighR = node;
+      if (bone === 'kneel') this.kneeL = node;
+      if (bone === 'kneer') this.kneeR = node;
+      if (bone === 'hips') this.hips = node;
     });
 
     this.baseHeadX = this.head?.rotation.x ?? 0;
@@ -190,6 +224,11 @@ export class CharacterIdle {
     this.baseHeadZ = this.head?.rotation.z ?? 0;
     this.baseSpineX = this.spine?.rotation.x ?? 0;
     this.baseSpineY = this.spine?.rotation.y ?? 0;
+    this.baseThighL = this.thighL?.rotation.x ?? 0;
+    this.baseThighR = this.thighR?.rotation.x ?? 0;
+    this.baseKneeL = this.kneeL?.rotation.x ?? 0;
+    this.baseKneeR = this.kneeR?.rotation.x ?? 0;
+    this.baseHipsY = this.hips?.position.y ?? 0;
 
     // Лежачие модели (в npcs.json есть такой персонаж) — особый случай:
     // у них кости сложены у пола, и «поворот шеи» читается как вывернутая
@@ -265,6 +304,7 @@ export class CharacterIdle {
       this.aim(dt);
     }
 
+    this.walk(dt);
     this.apply();
   }
 
@@ -485,6 +525,69 @@ export class CharacterIdle {
     const k = 1 - Math.exp(-dt / tau);
     this.yaw += (this.wantYaw - this.yaw) * k;
     this.pitch += (this.wantPitch - this.pitch) * k;
+  }
+
+  /**
+   * Процедурная ходьба: бёдра в противофазе, колени подгибаются на переносе,
+   * корпус покачивается. Только для стоящих: сидящим и лежачим не достаётся.
+   * Скорость берём из движения самой модели — от main.ts и remotePlayers
+   * ничего не требуется.
+   */
+  private walk(dt: number): void {
+    if (!WALK_ANIM || !this.upright || this.headLocked) return;
+    if (!this.thighL || !this.thighR) return;
+
+    const position = this.root.getWorldPosition(this.tmpA);
+    if (!this.walkMeasured) {
+      this.lastWalkPos.copy(position);
+      this.walkMeasured = true;
+    }
+    const moved = position.distanceTo(this.lastWalkPos);
+    this.lastWalkPos.copy(position);
+
+    const speed = moved / Math.max(0.001, dt);
+    // сглаживаем: одиночный телепорт не должен давать шаг
+    this.walkSpeed += (Math.min(6, speed) - this.walkSpeed) * Math.min(1, dt * 8);
+
+    const stride = Math.max(0.05, this.walkSpeed);
+    const swing = Math.min(WALK_SWING_MAX, this.walkSpeed * WALK_SWING);
+    const knee = swing * WALK_KNEE;
+
+    if (this.walkSpeed > 0.08) {
+      // фаза растёт пропорционально скорости: чаще шаг на бегу
+      this.walkPhase += dt * Math.PI * 2 * (stride / WALK_STRIDE);
+    } else {
+      // стоим: плавно возвращаем ноги в покой
+      this.walkPhase = 0;
+    }
+
+    const sin = Math.sin(this.walkPhase);
+
+    if (this.thighL) this.thighL.rotation.x = this.baseThighL + swing * sin;
+    if (this.thighR) this.thighR.rotation.x = this.baseThighR - swing * sin;
+    // колено подгибается на переносе: у левой ноги — когда она сзади
+    if (this.kneeL) this.kneeL.rotation.x = this.baseKneeL + knee * Math.max(0, -sin);
+    if (this.kneeR) this.kneeR.rotation.x = this.baseKneeR + knee * Math.max(0, sin);
+
+    if (this.hips) {
+      const bob = WALK_BOB * Math.min(1, this.walkSpeed / 1.6);
+      this.hips.position.y = this.baseHipsY + bob * (0.5 - 0.5 * Math.cos(this.walkPhase * 2));
+    }
+
+    if (this.spine) {
+      // лёгкий крен корпуса в такт шагу
+      this.spine.rotation.z = Math.sin(this.walkPhase) * 0.03 * Math.min(1, this.walkSpeed / 2);
+    }
+
+    if (this.walkSpeed <= 0.08) {
+      // в покое всё возвращается ровно в исходные углы
+      if (this.thighL) this.thighL.rotation.x = this.baseThighL;
+      if (this.thighR) this.thighR.rotation.x = this.baseThighR;
+      if (this.kneeL) this.kneeL.rotation.x = this.baseKneeL;
+      if (this.kneeR) this.kneeR.rotation.x = this.baseKneeR;
+      if (this.hips) this.hips.position.y = this.baseHipsY;
+      if (this.spine) this.spine.rotation.z = 0;
+    }
   }
 
   private apply(): void {
