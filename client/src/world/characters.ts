@@ -43,6 +43,49 @@ export interface SceneryItem {
   yaw?: number;
 }
 
+/**
+ * Накладки без скина (плоское лицо, шеврон, фонарь в руке) — если такие
+ * в модели есть — привязываем к ближайшей кости. Иначе они стоят на месте,
+ * пока тело и голова двигаются: ровно тот баг «текстура лица не едет».
+ * В нынешних 18 моделях таких мешей нет (один скиннинг-меш), вызов пустой.
+ */
+function bindLooseMeshes(root: THREE.Object3D): number {
+  const bones: THREE.Bone[] = [];
+  root.traverse((node) => {
+    if (node instanceof THREE.Bone) bones.push(node);
+  });
+  if (bones.length === 0) return 0;
+
+  const loose: THREE.Mesh[] = [];
+  root.traverse((node) => {
+    if (node instanceof THREE.Mesh && !(node instanceof THREE.SkinnedMesh)) loose.push(node);
+  });
+  if (loose.length === 0) return 0;
+
+  root.updateMatrixWorld(true);
+  const point = new THREE.Vector3();
+  const bonePoint = new THREE.Vector3();
+
+  for (const mesh of loose) {
+    mesh.getWorldPosition(point);
+    let nearest: THREE.Bone | null = null;
+    let nearestDistance = Infinity;
+    for (const bone of bones) {
+      bone.getWorldPosition(bonePoint);
+      const distance = bonePoint.distanceToSquared(point);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = bone;
+      }
+    }
+    // attach сохраняет мировую позу: накладка не прыгает в момент привязки
+    if (nearest) nearest.attach(mesh);
+  }
+
+  console.info('[модели] накладки без скина привязаны к костям:', loose.length);
+  return loose.length;
+}
+
 export class Characters {
   private readonly prototypes = new Map<CharacterId, THREE.Object3D>();
   private readonly loader = new GLTFLoader();
@@ -77,6 +120,9 @@ export class Characters {
    *  на кости, и все персонажи дёргались бы синхронно. */
   create(id: CharacterId): THREE.Object3D | null {
     const prototype = this.prototypes.get(id);
-    return prototype ? cloneSkeleton(prototype) : null;
+    if (!prototype) return null;
+    const model = cloneSkeleton(prototype);
+    bindLooseMeshes(model);
+    return model;
   }
 }

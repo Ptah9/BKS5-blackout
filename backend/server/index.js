@@ -360,6 +360,27 @@ const ANNOUNCE_TOPICS = [
 /** Темы, уже засчитанные в этом мире: спам одними и теми же словами не катит. */
 const announceUsed = new Set();
 
+/** Агент виден, если у него нет spawnFlag или флаг в базе уже стоит. */
+function npcVisible(npc) {
+  return !npc.spawnFlag || store.getFlag(npc.spawnFlag) === '1';
+}
+
+/** Список агентов для клиента: только те, кому пора появляться. */
+function npcViews() {
+  return npcs.filter(npcVisible).map((npc) => ({
+    id: npc.id,
+    name: npc.name,
+    pos: npc.pos,
+    yaw: npc.yaw,
+    model: npc.model,
+  }));
+}
+
+/** Флаг появления поднялся — клиенты получают новый список без перезахода. */
+function broadcastNpcs() {
+  broadcast({ kind: 'npcs', data: { list: npcViews() } });
+}
+
 /** Один гейт для клиента и сервера: акт 1 закрыт навсегда, когда цель взята. */
 function actOneReady() {
   return store.getFlag('act1_done') === '1';
@@ -735,13 +756,7 @@ function attachWebSocket(server) {
             self: { id: player.id, name: player.name, x: client.x, z: client.z, yaw: client.yaw },
             players: [...clients.values()].map(toView),
             inventory: client.inventory,
-            npcs: npcs.map((npc) => ({
-              id: npc.id,
-              name: npc.name,
-              pos: npc.pos,
-              yaw: npc.yaw,
-              model: npc.model,
-            })),
+            npcs: npcViews(),
           }));
 
           // догоняем сюжет: свет и задание, которые уже случились без нас
@@ -928,6 +943,8 @@ function attachWebSocket(server) {
             dropNotesByFlag(verb.flag);
             // клиенты должны узнать о флаге: от него зависит, открыта ли дверь
             broadcast({ kind: 'flag', data: { flag: verb.flag, value: Boolean(verb.value) } });
+            // флаг мог открыть нового агента — обновляем список всем
+            broadcastNpcs();
             // сценарий должен узнать о флаге, иначе триггеры на него не сработают
             scenario.fire('flag', { flag: verb.flag });
 
@@ -1150,13 +1167,7 @@ function attachWebSocket(server) {
               self: { id: client.playerId, name: client.name, x: client.x, z: client.z, yaw: client.yaw },
               players: [...clients.values()].map(toView),
               inventory: client.inventory,
-              npcs: npcs.map((npc) => ({
-                id: npc.id,
-                name: npc.name,
-                pos: npc.pos,
-                yaw: npc.yaw,
-                model: npc.model,
-              })),
+              npcs: npcViews(),
             }));
             return;
           }
@@ -1265,6 +1276,7 @@ function attachWebSocket(server) {
             store.setFlag(flag, on ? '1' : '0');
             dropNotesByFlag(flag);
             broadcast({ kind: 'flag', data: { flag, value: on } });
+            broadcastNpcs();
             if (on) scenario.fire('flag', { flag });
             log(`админ: флаг ${flag} = ${on ? '1' : '0'}`);
           }

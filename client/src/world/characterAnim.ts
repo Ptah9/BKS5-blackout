@@ -37,6 +37,14 @@ const NEIGHBOR_BEHIND = 0.95;
 
 /** Какую долю поворота забирает корпус, чтобы шея не работала одна. */
 const SPINE_SHARE = 0.2;
+
+/** Сидячие модели: голова висит не на кости, поэтому ход мягче —
+ *  рыскание ±26°, кивок −11°…+8.6°. Корпус им не доворачиваем. */
+const SEATED_YAW = 0.45;
+const SEATED_PITCH_UP = 0.15;
+const SEATED_PITCH_DOWN = 0.2;
+/** Дальше этого угла сидящий не следит: иначе смотрит боком, не повернувшись. */
+const SEATED_BEHIND = 0.95;
 const SPINE_LIMIT = 0.16;
 
 /** Высота глаз у фигуры без головной кости, метры. */
@@ -146,9 +154,14 @@ export class CharacterIdle {
   private wasInScene = false;
   /** Голова выше полуметра над точкой опоры: лежачим шею не крутим. */
   private readonly upright: boolean;
-  /** Сидячие модели: голова у них висит не на кости — поворот отключён целиком,
-   *  остаётся только дыхание. Так решил оператор после трёх попыток починить. */
+  /** Сидячие модели: голова висит не на кости, поворот у них уже и мягче,
+   *  а корпус не доворачивается. */
   private readonly headLocked: boolean = false;
+  private readonly maxYaw: number = MAX_YAW;
+  private readonly maxPitchUp: number = MAX_PITCH_UP;
+  private readonly maxPitchDown: number = MAX_PITCH_DOWN;
+  /** С какого угла цель считается «за спиной» для этой модели. */
+  private readonly behind: number = PLAYER_BEHIND;
   /** Стык шеи и головы относительно кости. Вращать надо вокруг него, а не
    *  вокруг центра головы: у стоящих кость и так на шее (смещение 0), а у
    *  сидящих она на 0.39–0.48 м позади головы, и без поправки голова
@@ -194,7 +207,13 @@ export class CharacterIdle {
       this.headShift = new THREE.Vector3(0, 0, shift.z);
       this.headBasePos.copy(this.head!.position);
       // голова висит позади кости: у сидящих моделей поворот отключаем совсем
-      if (shift.z < -0.2) this.headLocked = true;
+      if (shift.z < -0.2) {
+        this.headLocked = true;
+        this.maxYaw = SEATED_YAW;
+        this.maxPitchUp = SEATED_PITCH_UP;
+        this.maxPitchDown = SEATED_PITCH_DOWN;
+        this.behind = SEATED_BEHIND;
+      }
     }
 
     const unit = ((seed % 1) + 1) % 1;
@@ -234,7 +253,7 @@ export class CharacterIdle {
 
     // цель перевыбираем несколько раз в секунду, а угол считаем каждый кадр:
     // идущий человек должен оставаться в фокусе без рывков
-    if (this.upright && !this.headLocked) {
+    if (this.upright) {
       this.think -= dt;
       if (this.think <= 0) {
         this.choose();
@@ -381,7 +400,7 @@ export class CharacterIdle {
       const point = eyeOf(person, this.tmpEye);
       const distance = Math.hypot(point.x - origin.x, point.z - origin.z);
       if (distance < 0.45 || distance > PLAYER_RANGE) continue;
-      if (Math.abs(this.faceYaw(point)) > PLAYER_BEHIND) continue;
+      if (Math.abs(this.faceYaw(point)) > this.behind) continue;
       // за текущую цель держимся крепче: иначе при двух игроках рядом
       // взгляд перескакивает между ними каждый кадр
       const score = distance * (person === this.target ? 0.75 : 1);
@@ -405,7 +424,7 @@ export class CharacterIdle {
       const point = idle.eyeWorld(this.tmpEye);
       const distance = Math.hypot(point.x - origin.x, point.z - origin.z);
       if (distance < 0.5 || distance > NEIGHBOR_RANGE) continue;
-      if (Math.abs(this.faceYaw(point)) > NEIGHBOR_BEHIND) continue;
+      if (Math.abs(this.faceYaw(point)) > Math.min(NEIGHBOR_BEHIND, this.behind)) continue;
       const score = distance * (idle.root === this.target ? 0.75 : 1);
       if (score < bestScore) {
         bestScore = score;
@@ -451,8 +470,8 @@ export class CharacterIdle {
       this.root.getWorldQuaternion(this.tmpQuat);
       const local = this.tmpB.copy(point).sub(origin).applyQuaternion(this.tmpQuat.invert());
       const flat = Math.hypot(local.x, local.z);
-      wantYaw = clamp(normalizeAngle(Math.atan2(local.x, local.z) + this.facing), -MAX_YAW, MAX_YAW);
-      wantPitch = clamp(Math.atan2(local.y, flat || 0.001), -MAX_PITCH_DOWN, MAX_PITCH_UP);
+      wantYaw = clamp(normalizeAngle(Math.atan2(local.x, local.z) + this.facing), -this.maxYaw, this.maxYaw);
+      wantPitch = clamp(Math.atan2(local.y, flat || 0.001), -this.maxPitchDown, this.maxPitchUp);
     }
 
     this.wantYaw = wantYaw;
@@ -468,9 +487,9 @@ export class CharacterIdle {
   private apply(): void {
     // корпус забирает долю поворота, голова — остальное: суммарно ровно this.yaw,
     // иначе шея складывается с корпусом и предел 54° превращается в 65°
-    const spineYaw = clamp(this.yaw * SPINE_SHARE, -SPINE_LIMIT, SPINE_LIMIT);
+    const spineYaw = this.headLocked ? 0 : clamp(this.yaw * SPINE_SHARE, -SPINE_LIMIT, SPINE_LIMIT);
 
-    if (this.head && this.upright && !this.headLocked) {
+    if (this.head && this.upright) {
       // микротремор: даже замерев на цели, человек не превращается в манекен
       const tremor = Math.sin(this.time * 1.9 + this.phase) * 0.008;
       this.head.rotation.y = this.baseHeadY + this.yaw - spineYaw + tremor;

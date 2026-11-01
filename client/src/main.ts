@@ -852,6 +852,29 @@ async function main(): Promise<void> {
   /** Последний замер ping: уходит на сервер вместе с fps в панель админа. */
   let lastPingMs = 0;
 
+  /** Агенты с сервера: общий приём для снапшота и события «появился». */
+  function applyNpcs(
+    list: Array<{ id: string; name: string; pos: number[]; yaw: number; model?: string }>,
+  ): void {
+    npcEntities.length = 0;
+    npcIds.length = 0;
+    list.forEach((npc, index) => {
+      npcIds.push(npc.id);
+      npcEntities.push({
+        id: 1000 + index,
+        name: npc.name,
+        x: npc.pos[0],
+        z: npc.pos[2],
+        yaw: npc.yaw,
+        model: npc.model,
+        targetX: npc.pos[0],
+        targetZ: npc.pos[2],
+        targetYaw: npc.yaw,
+        lastSeen: Number.MAX_SAFE_INTEGER,
+      });
+    });
+  }
+
   const net = new Net(session.token, {
     onState: (state) => {
       elConn.textContent = state === 'open' ? 'есть' : state === 'connecting' ? 'подключаюсь…' : 'нет';
@@ -901,6 +924,12 @@ async function main(): Promise<void> {
             lastAppliedLights = -1; // заставим пересчитать свет и цвет плафонов
           }
           return;
+        case 'npcs': {
+          // флаг появления поднялся: сервер прислал новый список агентов
+          const list = (data.list as Array<{ id: string; name: string; pos: number[]; yaw: number; model?: string }>) ?? [];
+          applyNpcs(list);
+          return;
+        }
         case 'death': {
           // личная смерть: ввод заблокирован, мир живёт дальше
           dead = true;
@@ -986,25 +1015,7 @@ async function main(): Promise<void> {
     onPlayers: (list) => {
       replica.apply(list, session.playerId, performance.now());
     },
-    onNpcs: (list) => {
-      npcEntities.length = 0;
-      npcIds.length = 0;
-      list.forEach((npc, index) => {
-        npcIds.push(npc.id);
-        npcEntities.push({
-          id: 1000 + index,
-          name: npc.name,
-          x: npc.pos[0],
-          z: npc.pos[2],
-          yaw: npc.yaw,
-          model: npc.model,
-          targetX: npc.pos[0],
-          targetZ: npc.pos[2],
-          targetYaw: npc.yaw,
-          lastSeen: Number.MAX_SAFE_INTEGER,
-        });
-      });
-    },
+    onNpcs: applyNpcs,
     onNpcReply: (id, delta, done) => {
       if (delta) {
         // новая реплика или другой собеседник — начинаем печатать с чистого листа
