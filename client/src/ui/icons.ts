@@ -55,6 +55,41 @@ export const ITEM_ICONS: Record<string, string> = {
   candy: CANDY,
   paper: PAPER,
   flashlight: LAMP,
+  medkit: wrap(`
+    <g fill="none" stroke="#f0a9a9" stroke-width="3" stroke-linejoin="round">
+      <rect x="14" y="20" width="36" height="26" rx="4" fill="#3a1d1d"/>
+      <path d="M32 26v14M25 33h14" stroke="#ffd7d7"/>
+      <path d="M26 20v-5a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v5"/>
+    </g>
+  `),
+  voltmeter: wrap(`
+    <g fill="none" stroke="#a9d6c8" stroke-width="3" stroke-linejoin="round">
+      <rect x="16" y="18" width="32" height="30" rx="4" fill="#183028"/>
+      <path d="M24 26l8 8 8-8"/>
+      <path d="M32 34v6"/>
+      <circle cx="32" cy="44" r="2" fill="#a9d6c8"/>
+    </g>
+  `),
+  tube: wrap(`
+    <g fill="none" stroke="#d6c9a8" stroke-width="3" stroke-linejoin="round">
+      <rect x="20" y="8" width="24" height="46" rx="6" transform="rotate(12 32 32)" fill="#332f24"/>
+      <path d="M24 16h16" stroke="#8f8a72"/>
+    </g>
+  `),
+  pencil: wrap(`
+    <g stroke-linejoin="round">
+      <path d="M18 46l4-12 24-24 8 8-24 24z" fill="#4a4230" stroke="#d7c17a" stroke-width="3"/>
+      <path d="M46 10l8 8" stroke="#efe3b0" stroke-width="3"/>
+      <path d="M22 34l8 8" stroke="#d7c17a" stroke-width="3"/>
+    </g>
+  `),
+  drawing: wrap(`
+    <g fill="none" stroke="#bcd0e8" stroke-width="3" stroke-linejoin="round">
+      <rect x="12" y="12" width="40" height="40" rx="3" fill="#1b2634"/>
+      <path d="M18 44l10-14 8 8 10-16"/>
+      <path d="M18 20h10M18 26h6" stroke="#7f93ad"/>
+    </g>
+  `),
 };
 
 export function itemIcon(id: string | null): string | null {

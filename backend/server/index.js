@@ -246,6 +246,9 @@ function startRadio({ text, repeats = 4, interval = 4 }) {
 
       if (i === 4) {
         changeStat('panic', 12);
+        // толпа поняла, что машинист сам не выйдет: с этого момента паника
+        // растёт сама, пока её не собьют бумажкой, тангентой и словами
+        store.setFlag('panic_running', '1');
       }
     }, i * interval * 1000));
   }
@@ -773,12 +776,42 @@ function attachWebSocket(server) {
             dropNotesByFlag(verb.flag);
             // сценарий должен узнать о флаге, иначе триггеры на него не сработают
             scenario.fire('flag', { flag: verb.flag });
+
+            // запись выключили — она больше не играет
+            if (verb.flag === 'announcer_off') stopRadio();
+          }
+
+          // предмет из мира: если в рюкзаке есть место, вещь уходит в слот
+          if (verb.item) {
+            const takenKey = `taken_${prop.id}`;
+            const taken = store.getFlag(takenKey) === '1';
+            const free = client.inventory.indexOf(null);
+
+            if (taken || free === -1) {
+              ws.send(JSON.stringify({
+                t: MSG.EVENT,
+                kind: 'prop',
+                data: {
+                  id: prop.id,
+                  verb: verb.id,
+                  text: taken ? 'Тут уже пусто.' : 'В рюкзаке нет места.',
+                },
+              }));
+              return;
+            }
+
+            client.inventory[free] = verb.item;
+            store.setFlag(takenKey, '1');
+            store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
+            sendInventory(ws, client.inventory, verb.text ?? '');
           }
 
           // открытая дверь кабины пугает: там никого нет, и это заметно
           if (verb.id === 'open') changeStat('panic', 4);
           // открытая форточка возвращает воздух
           if (verb.air) changeStat('air', Number(verb.air));
+          // тубус бьёт по нервам, конфеты наоборот
+          if (verb.panic) changeStat('panic', Number(verb.panic));
 
           // у верба может быть своя мини-сцена — проигрываем её всем
           if (verb.cutscene) {
@@ -993,6 +1026,26 @@ setInterval(() => {
   airTick++;
   if (airTick % 2 === 0 && stats.air > 0) changeStat('air', -1);
 }, 1000);
+
+// паника после записи растёт сама: бумажка на двери и выключенная тангента
+// замедляют её, но не останавливают — толпу надо ещё и успокоить словами
+let panicAccumulator = 0;
+setInterval(() => {
+  if (!scenario.running || clients.size === 0) return;
+  if (store.getFlag('panic_running') !== '1') return;
+
+  let rate = 1;
+  if (store.getFlag('cab_papered') === '1') rate *= 0.6;
+  if (store.getFlag('announcer_off') === '1') rate *= 0.5;
+  if (store.getFlag('crowd_calmed') === '1') rate = 0;
+
+  panicAccumulator += rate;
+  if (panicAccumulator >= 1) {
+    const step = Math.floor(panicAccumulator);
+    panicAccumulator -= step;
+    changeStat('panic', step);
+  }
+}, 3000);
 
 if (!existsSync(join(DIST, 'index.html'))) {
   log('! dist/ не собран — сначала `npm run build`');

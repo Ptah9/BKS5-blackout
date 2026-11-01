@@ -12,6 +12,11 @@ export const ITEMS = Object.freeze({
   candy: { id: 'candy', name: 'Конфеты', short: 'кон.' },
   paper: { id: 'paper', name: 'Бумажка', short: 'бум.' },
   flashlight: { id: 'flashlight', name: 'Фонарик из бутылки', short: 'фон.' },
+  medkit: { id: 'medkit', name: 'Аптечка', short: 'апт.' },
+  voltmeter: { id: 'voltmeter', name: 'Указатель напряжения', short: 'увн' },
+  tube: { id: 'tube', name: 'Тубус с начертом', short: 'туб.' },
+  pencil: { id: 'pencil', name: 'Карандаш', short: 'кар.' },
+  drawing: { id: 'drawing', name: 'Доделанный начерт', short: 'нач.' },
 });
 
 /** Что с чем соединяется. Порядок в паре не важен. */
@@ -21,6 +26,12 @@ export const RECIPES = Object.freeze([
     b: 'phone',
     result: 'flashlight',
     text: 'Бутылка с водой работает как линза: свет ровнее и ярче.',
+  },
+  {
+    a: 'tube',
+    b: 'pencil',
+    result: 'drawing',
+    text: 'Чертёж доделан. Вагон уважительно замолкает.',
   },
 ]);
 
