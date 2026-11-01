@@ -36,10 +36,10 @@ export const RECIPES = Object.freeze([
   },
 ]);
 
-export const SLOT_COUNT = 6;
+export const SLOT_COUNT = 8;
 
 /** Стартовый набор: чтобы на демо не искать предметы по вагону. */
-export const START_INVENTORY = Object.freeze(['bottle', 'phone', 'candy', 'paper', null, null]);
+export const START_INVENTORY = Object.freeze(['bottle', 'phone', 'candy', 'paper', null, null, null, null]);
 
 /**
  * Проверяет пару и возвращает рецепт, если он есть.

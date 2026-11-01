@@ -20,6 +20,11 @@
       "until": "has_light"
     },
     {
+      "at": 7.6,
+      "do": "objective",
+      "text": "Найти, чем осветить вагон"
+    },
+    {
       "at": 330,
       "do": "thought",
       "id": "flicker",
@@ -46,6 +51,13 @@
     },
     {
       "on": "flag",
+      "flag": "has_light",
+      "once": true,
+      "do": "objective",
+      "text": "Открыть форточку: в вагоне душно"
+    },
+    {
+      "on": "flag",
       "flag": "window_open",
       "once": true,
       "do": "say",
@@ -62,12 +74,42 @@
     },
     {
       "on": "flag",
+      "flag": "window_open",
+      "once": true,
+      "do": "objective",
+      "text": "Дойти до кабины машиниста"
+    },
+    {
+      "on": "flag",
       "flag": "cab_open",
       "once": true,
       "do": "thought",
       "id": "cab_empty",
       "text": "Кабина пуста. Дверь наружу распахнута, и из неё тянет холодом.",
       "until": "cab_papered"
+    },
+    {
+      "on": "flag",
+      "flag": "cab_open",
+      "once": true,
+      "do": "objective",
+      "text": "Разобраться в кабине и успокоить вагон"
+    },
+    {
+      "on": "flag",
+      "flag": "announcer_off",
+      "once": true,
+      "do": "thought",
+      "id": "tell_crowd",
+      "text": "Запись смолкла. Люди молчат и ждут, что им скажут. Тангента в кабине работает.",
+      "until": "crowd_calmed"
+    },
+    {
+      "on": "flag",
+      "flag": "crowd_calmed",
+      "once": true,
+      "do": "say",
+      "text": "Вагон выдыхает. Говорить с людьми оказалось важнее, чем бежать."
     },
     {
       "on": "flag",

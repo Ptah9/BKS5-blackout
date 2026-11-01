@@ -21,7 +21,7 @@ import { ensureSession, forgetSession } from './ui/login';
 import { ChunkManager } from './world/chunks';
 import { Characters, type CharacterId, type SceneryItem } from './world/characters';
 import { Passengers, type PassengerSpot } from './world/passengers';
-import { CAR_HEIGHT } from './world/car';
+import { CAR_HEIGHT, setVentOpen } from './world/car';
 import { buildCab } from './world/cab';
 import { buildTunnel } from './world/tunnel';
 import { buildPlatform } from './world/platform';
@@ -1014,7 +1014,7 @@ async function main(): Promise<void> {
     // пока игрок печатает или роется в рюкзаке, игровые клавиши не работают
     if (chatOpen || bagOpen || adminOpen) return;
 
-    if (/^Digit[1-6]$/.test(event.code)) {
+    if (/^Digit[1-8]$/.test(event.code)) {
       // в нижней полоске выбирается ровно один предмет: им и работаем с миром
       inventory.select(Number(event.code.slice(5)) - 1);
       hud.renderSlots();
@@ -1092,6 +1092,9 @@ async function main(): Promise<void> {
       soundscape.setListener(player.position.x, player.position.z);
 
       chunks.update(player.position.z);
+
+      // створки форточек в дверях: открываются по флагу, вызов идемпотентный
+      setVentOpen(worldFlags.has('window_open'));
 
       // ближайший персонаж: подсказка «T — поговорить»
       let closest: RemotePlayer | null = null;

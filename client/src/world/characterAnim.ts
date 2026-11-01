@@ -46,6 +46,14 @@ function clamp(value: number, min: number, max: number): number {
   return value < min ? min : value > max ? max : value;
 }
 
+/** Угол в (−π, π]: после добавки π к сидящим моделям он выходит за предел. */
+function normalizeAngle(angle: number): number {
+  let result = angle;
+  while (result > Math.PI) result -= Math.PI * 2;
+  while (result < -Math.PI) result += Math.PI * 2;
+  return result;
+}
+
 /** Роль кости по имени: у моделей проекта это head и spine, но встречается
  *  и mixamo-раскладка, поэтому сравниваем по «голому» имени. */
 function boneRole(rawName: string): 'head' | 'spine' | null {
@@ -138,6 +146,13 @@ export class CharacterIdle {
   private wasInScene = false;
   /** Голова выше полуметра над точкой опоры: лежачим шею не крутим. */
   private readonly upright: boolean;
+  /** Центр головы относительно кости (в системе модели): у сидящих моделей
+   *  он на 0.39–0.48 м позади кости, и без поправки голова не поворачивается,
+   *  а уезжает в сторону. */
+  private readonly headShift: THREE.Vector3 | null = null;
+  private readonly headBasePos = new THREE.Vector3();
+  /** Куда смотрит лицо при нулевом повороте: у сидящих моделей это −Z. */
+  private readonly facing: number = 0;
 
   private readonly tmpQuat = new THREE.Quaternion();
   private readonly tmpOrigin = new THREE.Vector3();
@@ -165,6 +180,16 @@ export class CharacterIdle {
     const headY = this.eyeWorld(this.tmpA).y;
     const rootY = this.root.getWorldPosition(this.tmpB).y;
     this.upright = headY - rootY > 0.6;
+
+    // Где на самом деле голова относительно кости: по вершинам, привязанным
+    // к head. У стоящих моделей смещение нулевое, у сидящих — почти полметра.
+    const shift = this.measureHeadShift();
+    if (shift) {
+      this.headShift = shift;
+      this.headBasePos.copy(this.head!.position);
+      // голова висит позади кости — лицо у таких моделей смотрит в −Z
+      if (shift.z < -0.25) this.facing = Math.PI;
+    }
 
     const unit = ((seed % 1) + 1) % 1;
     this.phase = unit * Math.PI * 2;
@@ -242,6 +267,57 @@ export class CharacterIdle {
     world.idles.delete(this);
   }
 
+  /**
+   * Центр головы относительно кости: считается по вершинам, привязанным
+   * к head. Нужен и для поправки поворота, и для определения, куда смотрит
+   * лицо у моделей, у которых голова смещена назад.
+   */
+  private measureHeadShift(): THREE.Vector3 | null {
+    const head = this.head;
+    if (!head) return null;
+
+    let skinned: THREE.SkinnedMesh | null = null;
+    this.root.traverse((node) => {
+      if (!skinned && node instanceof THREE.SkinnedMesh) skinned = node;
+    });
+    if (!skinned) return null;
+
+    const mesh = skinned as THREE.SkinnedMesh;
+    const index = mesh.skeleton.bones.indexOf(head);
+    if (index < 0) return null;
+
+    const skinIndex = mesh.geometry.getAttribute('skinIndex');
+    const skinWeight = mesh.geometry.getAttribute('skinWeight');
+    const position = mesh.geometry.getAttribute('position');
+    if (!skinIndex || !skinWeight || !position) return null;
+
+    const center = new THREE.Vector3();
+    let count = 0;
+    for (let i = 0; i < position.count; i++) {
+      let weight = 0;
+      for (let k = 0; k < 4; k++) {
+        if (skinIndex.getComponent(i, k) === index) weight += skinWeight.getComponent(i, k);
+      }
+      if (weight <= 0.5) continue;
+      center.x += position.getX(i);
+      center.y += position.getY(i);
+      center.z += position.getZ(i);
+      count++;
+    }
+    if (count === 0) return null;
+    center.divideScalar(count);
+
+    this.root.updateMatrixWorld(true);
+    const bone = head.getWorldPosition(new THREE.Vector3());
+    mesh.worldToLocal(bone);
+    return center.sub(bone);
+  }
+
+  /** Куда должна повернуться голова, чтобы лицо смотрело на точку. */
+  private faceYaw(point: THREE.Vector3): number {
+    return normalizeAngle(this.yawTo(point) + this.facing);
+  }
+
   /** Готовые числа для проверок: не надо лезть в кости снаружи. */
   state(): {
     yaw: number;
@@ -299,7 +375,7 @@ export class CharacterIdle {
       const point = eyeOf(person, this.tmpEye);
       const distance = Math.hypot(point.x - origin.x, point.z - origin.z);
       if (distance < 0.45 || distance > PLAYER_RANGE) continue;
-      if (Math.abs(this.yawTo(point)) > PLAYER_BEHIND) continue;
+      if (Math.abs(this.faceYaw(point)) > PLAYER_BEHIND) continue;
       // за текущую цель держимся крепче: иначе при двух игроках рядом
       // взгляд перескакивает между ними каждый кадр
       const score = distance * (person === this.target ? 0.75 : 1);
@@ -323,7 +399,7 @@ export class CharacterIdle {
       const point = idle.eyeWorld(this.tmpEye);
       const distance = Math.hypot(point.x - origin.x, point.z - origin.z);
       if (distance < 0.5 || distance > NEIGHBOR_RANGE) continue;
-      if (Math.abs(this.yawTo(point)) > NEIGHBOR_BEHIND) continue;
+      if (Math.abs(this.faceYaw(point)) > NEIGHBOR_BEHIND) continue;
       const score = distance * (idle.root === this.target ? 0.75 : 1);
       if (score < bestScore) {
         bestScore = score;
@@ -369,7 +445,7 @@ export class CharacterIdle {
       this.root.getWorldQuaternion(this.tmpQuat);
       const local = this.tmpB.copy(point).sub(origin).applyQuaternion(this.tmpQuat.invert());
       const flat = Math.hypot(local.x, local.z);
-      wantYaw = clamp(Math.atan2(local.x, local.z), -MAX_YAW, MAX_YAW);
+      wantYaw = clamp(normalizeAngle(Math.atan2(local.x, local.z) + this.facing), -MAX_YAW, MAX_YAW);
       wantPitch = clamp(Math.atan2(local.y, flat || 0.001), -MAX_PITCH_DOWN, MAX_PITCH_UP);
     }
 
@@ -395,6 +471,14 @@ export class CharacterIdle {
       this.head.rotation.x =
         this.baseHeadX - this.pitch + Math.sin(this.time * 1.1 + this.phase * 2) * 0.005;
       this.head.rotation.z = this.baseHeadZ + this.yaw * 0.07;
+
+      // у сидящих моделей кость головы на 0.4 м позади самой головы: без этой
+      // поправки поворот уводит голову с плеч. Считаем сдвиг центр→поворот→центр.
+      if (this.headShift) {
+        this.tmpQuat.setFromEuler(this.head.rotation);
+        this.tmpA.copy(this.headShift).applyQuaternion(this.tmpQuat);
+        this.head.position.copy(this.headBasePos).add(this.tmpB.copy(this.headShift).sub(this.tmpA));
+      }
     }
 
     if (this.spine) {

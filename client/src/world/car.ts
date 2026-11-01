@@ -40,6 +40,70 @@ const WINDOW_Y = 1.62;
 
 const SEAT_PITCH = 0.58;
 
+/** Форточка в верхней части дверного стекла: вырез, рама и откидная створка. */
+const VENT_TOP = 1.93;
+const VENT_BOTTOM = 1.63;
+const VENT_HALF_W = 0.3;
+/** Насколько откидывается створка, рад (≈54°). */
+const VENT_ANGLE = 0.95;
+
+interface VentState {
+  /** Точка подвеса створки: верхняя кромка. */
+  pivot: THREE.Group;
+  /** Борт: +1 правый, −1 левый. Створка откидывается наружу. */
+  side: number;
+  /** 0 закрыто … 1 открыто. */
+  value: number;
+  target: number;
+}
+
+/** Все построенные створки: setVentOpen переключает их разом. */
+const vents: VentState[] = [];
+let ventTween: number | null = null;
+let ventLast = 0;
+
+/**
+ * Открыть/закрыть форточки во всех дверях. Флаг `window_open` приходит
+ * с сервера; вызов идемпотентный — повторять каждый кадр безопасно.
+ * Створка откидывается за 0.45 с, шея тут ни при чём — это дверь.
+ */
+export function setVentOpen(open: boolean): void {
+  if (vents.length === 0) return;
+  for (const vent of vents) vent.target = open ? 1 : 0;
+  if (ventTween === null) ventTween = requestAnimationFrame(stepVents);
+}
+
+function stepVents(time: number): void {
+  const dt = ventLast ? Math.min(0.1, (time - ventLast) / 1000) : 0.016;
+  ventLast = time;
+
+  let moving = false;
+  for (const vent of vents) {
+    const step = dt / 0.45;
+    if (vent.value !== vent.target) {
+      vent.value =
+        vent.value < vent.target
+          ? Math.min(vent.target, vent.value + step)
+          : Math.max(vent.target, vent.value - step);
+    }
+    if (vent.value !== vent.target) moving = true;
+    const k = vent.value * vent.value * (3 - 2 * vent.value);
+    vent.pivot.rotation.z = vent.side * VENT_ANGLE * k;
+  }
+
+  // выгруженный чанк уносит свои створки с собой: не держим мёртвые ссылки
+  for (let i = vents.length - 1; i >= 0; i--) {
+    if (!vents[i].pivot.parent) vents.splice(i, 1);
+  }
+
+  if (moving) {
+    ventTween = requestAnimationFrame(stepVents);
+  } else {
+    ventTween = null;
+    ventLast = 0;
+  }
+}
+
 export interface CarBuild {
   group: THREE.Group;
   colliders: Box2[];
@@ -117,6 +181,15 @@ export function buildCar(
     door: new THREE.MeshStandardMaterial({ color: 0xe3b81c, roughness: 0.55, metalness: 0.15 }),
     lamp: new THREE.MeshStandardMaterial({ color: 0xd9d6cb, emissive: 0x000000, roughness: 0.5 }),
     screen: new THREE.MeshStandardMaterial({ color: 0x0d1014, emissive: 0x0a1420, roughness: 0.3 }),
+    /** Форточка: светлый металл, чтобы её было видно в темноте. */
+    vent: new THREE.MeshStandardMaterial({ color: 0xc7ced3, roughness: 0.45, metalness: 0.5 }),
+    ventGlass: new THREE.MeshStandardMaterial({
+      color: 0x40525e,
+      roughness: 0.12,
+      metalness: 0.7,
+      transparent: true,
+      opacity: 0.55,
+    }),
   };
 
   const buckets: Record<keyof typeof materials, BoxInstance[]> = {
@@ -129,6 +202,9 @@ export function buildCar(
     door: [],
     lamp: [],
     screen: [],
+    vent: [],
+    // стекло створки — отдельный меш, не инстанс: бакет только для типа
+    ventGlass: [],
   };
 
   const push = (
@@ -191,10 +267,69 @@ export function buildCar(
       push('glass', x - side * 0.06, WINDOW_Y, z, 0.02, WINDOW_H, WINDOW_W);
     }
 
-    // двери: жёлтые створки, тоже с зазором от панели
+    // двери: жёлтые створки, тоже с зазором от панели.
+    // Стекло двери не цельное: в верхней части вырез под форточку, иначе
+    // открытая створка ничего не открывала бы.
     for (const z of DOORS) {
       push('door', x - side * 0.07, 1.05, z, 0.05, 2.1, DOOR_WIDTH);
-      push('glass', x - side * 0.105, 1.55, z, 0.02, 0.85, 0.9);
+
+      const glassX = x - side * 0.105;
+      const glassBottom = 1.125;
+      const glassTop = 1.975;
+      const halfGlass = 0.45;
+
+      push('glass', glassX, (glassBottom + VENT_BOTTOM) / 2, z, 0.02, VENT_BOTTOM - glassBottom, halfGlass * 2);
+      push('glass', glassX, (VENT_TOP + glassTop) / 2, z, 0.02, glassTop - VENT_TOP, halfGlass * 2);
+      for (const dir of [-1, 1] as const) {
+        push(
+          'glass',
+          glassX,
+          (VENT_TOP + VENT_BOTTOM) / 2,
+          z + dir * (VENT_HALF_W + (halfGlass - VENT_HALF_W) / 2),
+          0.02,
+          VENT_TOP - VENT_BOTTOM,
+          halfGlass - VENT_HALF_W,
+        );
+      }
+
+      // форточка строится в том чанке, которому принадлежит центр двери:
+      // створка поворачивается цельным мешком, резать её по шву нельзя
+      if (z >= zFrom && z < zTo) {
+        const frameX = glassX - side * 0.012;
+        const height = VENT_TOP - VENT_BOTTOM;
+
+        // рама: две планки по z и две по y
+        buckets.vent.push({ x: frameX, y: VENT_TOP + 0.015, z, sx: 0.035, sy: 0.03, sz: VENT_HALF_W * 2 + 0.1 });
+        buckets.vent.push({ x: frameX, y: VENT_BOTTOM - 0.015, z, sx: 0.035, sy: 0.03, sz: VENT_HALF_W * 2 + 0.1 });
+        for (const dir of [-1, 1] as const) {
+          buckets.vent.push({
+            x: frameX,
+            y: (VENT_TOP + VENT_BOTTOM) / 2,
+            z: z + dir * (VENT_HALF_W + 0.02),
+            sx: 0.035,
+            sy: height,
+            sz: 0.03,
+          });
+        }
+
+        // створка: подвес на верхней кромке, откидывается наружу
+        const pivot = new THREE.Group();
+        pivot.name = 'vent';
+        pivot.position.set(frameX - side * 0.03, VENT_TOP, z);
+
+        const sashH = height - 0.02;
+        const sashW = VENT_HALF_W * 2 - 0.01;
+        const sashFrame = new THREE.Mesh(new THREE.BoxGeometry(0.03, sashH, sashW), materials.vent);
+        sashFrame.position.set(0, -sashH / 2, 0);
+        const sashPane = new THREE.Mesh(
+          new THREE.BoxGeometry(0.01, sashH - 0.05, sashW - 0.05),
+          materials.ventGlass,
+        );
+        sashPane.position.set(-side * 0.022, -sashH / 2, 0);
+        pivot.add(sashFrame, sashPane);
+        group.add(pivot);
+        vents.push({ pivot, side, value: 0, target: 0 });
+      }
     }
 
     // информационные экраны над сиденьями у дверей
@@ -247,12 +382,14 @@ export function buildCar(
     ['door', buildInstanced(buckets.door, materials.door, { receive: true })],
     ['lamp', buildInstanced(buckets.lamp, materials.lamp)],
     ['screen', buildInstanced(buckets.screen, materials.screen)],
+    ['vent', buildInstanced(buckets.vent, materials.vent)],
   ];
 
   const lamps: THREE.Object3D[] = [];
   for (const [name, mesh] of meshes) {
     if (!mesh) continue;
-    mesh.name = name;
+    // рама форточки — инстансы, створки — отдельные группы с тем же именем
+    mesh.name = name === 'vent' ? 'ventFrames' : name;
     group.add(mesh);
     if (name === 'lamp') lamps.push(mesh);
   }
@@ -342,6 +479,9 @@ export function buildCar(
   }
 
   group.userData.seatCount = seatCount;
+  // для отладки и предпросмотра: можно дёрнуть прямо из консоли
+  group.userData.ventCount = vents.filter((v) => v.pivot.parent === group).length;
+  group.userData.setVentOpen = setVentOpen;
 
   return { group, colliders, phones, lamps };
 }
