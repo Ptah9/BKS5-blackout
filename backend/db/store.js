@@ -87,6 +87,7 @@ export class Store {
       recentMemory: this.db.prepare(
         'SELECT role, text FROM npc_memory WHERE npc_id = ? AND player_id = ? ORDER BY id DESC LIMIT ?',
       ),
+      clearNpcMemory: this.db.prepare('DELETE FROM npc_memory'),
       saveState: this.db.prepare(
         `INSERT INTO state (player_id, x, z, yaw, inventory, updated_at) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(player_id) DO UPDATE SET x = excluded.x, z = excluded.z,
@@ -160,6 +161,10 @@ export class Store {
   /** Последние реплики в хронологическом порядке — их и отдаём модели. */
   recentMemory(npcId, playerId, limit = 12) {
     return this.q.recentMemory.all(npcId, playerId, limit).reverse();
+  }
+
+  clearNpcMemory() {
+    this.q.clearNpcMemory.run();
   }
 
   close() {

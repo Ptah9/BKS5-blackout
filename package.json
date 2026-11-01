@@ -7,6 +7,7 @@
   "scripts": {
     "dev:server": "node backend/server/index.js --dev",
     "dev:client": "vite --config client/vite.config.ts",
+    "dev:clean": "node tools/dev-clean.mjs",
     "build": "vite build --config client/vite.config.ts",
     "start": "node backend/server/index.js",
     "cert": "node tools/make-cert.js",

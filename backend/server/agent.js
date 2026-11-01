@@ -209,6 +209,7 @@ export class AgentRuntime {
         model: this.localModel,
         stream: true,
         messages,
+        ...(this.localModel.toLowerCase().startsWith('qwen3') ? { think: false } : {}),
         options: { temperature: 0.4, num_predict: 160 },
       }),
       signal: abort.signal,
