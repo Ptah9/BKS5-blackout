@@ -94,9 +94,9 @@ export class Net {
   }
 
   /** Действие с предметом мира: дверь, кнопка, люк. Проверяет сервер. */
-  interact(id: string, verb: string): void {
+  interact(id: string, verb: string, item?: string | null): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify({ t: MSG.INTERACT, id, verb }));
+    this.ws.send(JSON.stringify({ t: MSG.INTERACT, id, verb, item: item ?? null }));
   }
 
   /** Старт игры: сценарий запускается у всех одновременно. */

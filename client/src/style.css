@@ -555,6 +555,17 @@ body {
   color: rgb(150 165 185 / 0.7);
 }
 
+#inv .slot img {
+  width: 36px;
+  height: 36px;
+  image-rendering: pixelated;
+  opacity: 0.55;
+}
+
+#inv .slot.filled img {
+  opacity: 1;
+}
+
 /* ── рюкзак ──────────────────────────────────────────────── */
 
 #bag-btn {

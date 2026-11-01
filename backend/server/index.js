@@ -770,6 +770,16 @@ function attachWebSocket(server) {
             return;
           }
 
+          // действие требует конкретный предмет в руках
+          if (verb.requiresItem && String(msg.item ?? '') !== verb.requiresItem) {
+            ws.send(JSON.stringify({
+              t: MSG.EVENT,
+              kind: 'prop',
+              data: { id: prop.id, verb: verb.id, text: verb.needItemText ?? 'Нужен подходящий предмет.' },
+            }));
+            return;
+          }
+
           if (verb.flag) {
             store.setFlag(verb.flag, verb.value ? '1' : '0');
             // мысль, которая опиралась на этот флаг, устарела — снимаем до новых

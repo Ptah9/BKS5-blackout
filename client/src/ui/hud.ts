@@ -57,26 +57,35 @@ export class Hud {
       const item = id ? ITEM_TABLE[id] : null;
       const selected = this.inventory.selected.includes(i);
 
-      // нижняя полоска: короткая подпись, как раньше
+      // нижняя полоска: иконка и номер, выбор одного предмета
       const strip = this.slotEls[i * 2];
-      strip.textContent = item ? item.short : '';
+      const icon = itemIcon(id);
+      strip.innerHTML = '';
       strip.title = item ? item.name : '';
       strip.classList.toggle('filled', Boolean(item));
       strip.classList.toggle('selected', selected);
       strip.dataset.key = String(i + 1);
 
+      if (icon) {
+        const img = document.createElement('img');
+        img.src = icon;
+        img.alt = item?.name ?? '';
+        img.draggable = false;
+        strip.appendChild(img);
+      }
+
       // слот рюкзака: картинка и название
       const cell = this.slotEls[i * 2 + 1];
-      const icon = itemIcon(id);
+      const cellIcon = itemIcon(id);
       cell.innerHTML = '';
       cell.classList.toggle('filled', Boolean(item));
       cell.classList.toggle('selected', selected);
       cell.title = item ? item.name : 'пусто';
       cell.dataset.key = String(i + 1);
 
-      if (icon) {
+      if (cellIcon) {
         const img = document.createElement('img');
-        img.src = icon;
+        img.src = cellIcon;
         img.alt = item?.name ?? '';
         img.draggable = false;
         cell.appendChild(img);

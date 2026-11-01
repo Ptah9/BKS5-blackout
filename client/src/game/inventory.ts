@@ -47,6 +47,22 @@ export class Inventory {
     if (this.selectedSlots.length > 2) this.selectedSlots.shift();
   }
 
+  /** Нижняя полоска: выбран ровно один предмет — им работаем с миром. */
+  select(index: number): void {
+    if (index < 0 || index >= this.slots.length) return;
+    if (!this.slots[index]) {
+      this.selectedSlots = [];
+      return;
+    }
+    this.selectedSlots = this.selectedSlots[0] === index ? [] : [index];
+  }
+
+  /** Что сейчас в руках: уходит на сервер вместе с действием. */
+  get selectedItem(): string | null {
+    const index = this.selectedSlots[0];
+    return index === undefined ? null : this.slots[index] ?? null;
+  }
+
   /** Пара слотов для комбинирования — или null, если выбрано не два. */
   get pair(): [number, number] | null {
     if (this.selectedSlots.length !== 2) return null;

@@ -679,7 +679,8 @@ async function main(): Promise<void> {
     }
 
     if (event.code === 'KeyE' && !chatOpen && !bagOpen && !cutscene.playing) {
-      if (nearProp && nearPropVerb) net.interact(nearProp.id, nearPropVerb.id);
+      // в мир идём с тем предметом, что выбран в нижней полоске
+      if (nearProp && nearPropVerb) net.interact(nearProp.id, nearPropVerb.id, inventory.selectedItem);
       return;
     }
 
@@ -692,19 +693,10 @@ async function main(): Promise<void> {
     }
 
     if (/^Digit[1-6]$/.test(event.code)) {
-      inventory.toggle(Number(event.code.slice(5)) - 1);
+      // в нижней полоске выбирается ровно один предмет: им и работаем с миром
+      inventory.select(Number(event.code.slice(5)) - 1);
       hud.renderSlots();
       return;
-    }
-
-    if (event.code === 'KeyC') {
-      const pair = inventory.pair;
-      if (!pair) {
-        hud.say('Выбери два предмета: цифры 1–6');
-        return;
-      }
-      // решает сервер: он сверяет рецепт и присылает новое состояние слотов
-      net.combine(pair[0], pair[1]);
     }
   });
 
