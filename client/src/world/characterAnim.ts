@@ -38,13 +38,6 @@ const NEIGHBOR_BEHIND = 0.95;
 /** Какую долю поворота забирает корпус, чтобы шея не работала одна. */
 const SPINE_SHARE = 0.2;
 
-/** Сидячие модели: голова висит не на кости, поэтому ход мягче —
- *  рыскание ±26°, кивок −11°…+8.6°. Корпус им не доворачиваем. */
-const SEATED_YAW = 0.45;
-const SEATED_PITCH_UP = 0.15;
-const SEATED_PITCH_DOWN = 0.2;
-/** Дальше этого угла сидящий не следит: иначе смотрит боком, не повернувшись. */
-const SEATED_BEHIND = 0.95;
 const SPINE_LIMIT = 0.16;
 
 /** Высота глаз у фигуры без головной кости, метры. */
@@ -206,13 +199,13 @@ export class CharacterIdle {
       // а по глубине — там, где на самом деле висит голова.
       this.headShift = new THREE.Vector3(0, 0, shift.z);
       this.headBasePos.copy(this.head!.position);
-      // голова висит позади кости: у сидящих моделей поворот отключаем совсем
+      // Голова висит позади кости — у этих моделей неясно, куда смотрит лицо
+      // (у npc_sit и npc_sidit геометрия даёт −Z лишь на грани шума, а разворот
+      // на π ставил лицо против корпуса). Поэтому: никакого разворота и никакого
+      // поворота головы, только дыхание. Так лицо хотя бы смотрит туда же,
+      // куда и тело.
       if (shift.z < -0.2) {
         this.headLocked = true;
-        this.maxYaw = SEATED_YAW;
-        this.maxPitchUp = SEATED_PITCH_UP;
-        this.maxPitchDown = SEATED_PITCH_DOWN;
-        this.behind = SEATED_BEHIND;
       }
     }
 
@@ -253,7 +246,7 @@ export class CharacterIdle {
 
     // цель перевыбираем несколько раз в секунду, а угол считаем каждый кадр:
     // идущий человек должен оставаться в фокусе без рывков
-    if (this.upright) {
+    if (this.upright && !this.headLocked) {
       this.think -= dt;
       if (this.think <= 0) {
         this.choose();
@@ -489,7 +482,7 @@ export class CharacterIdle {
     // иначе шея складывается с корпусом и предел 54° превращается в 65°
     const spineYaw = this.headLocked ? 0 : clamp(this.yaw * SPINE_SHARE, -SPINE_LIMIT, SPINE_LIMIT);
 
-    if (this.head && this.upright) {
+    if (this.head && this.upright && !this.headLocked) {
       // микротремор: даже замерев на цели, человек не превращается в манекен
       const tremor = Math.sin(this.time * 1.9 + this.phase) * 0.008;
       this.head.rotation.y = this.baseHeadY + this.yaw - spineYaw + tremor;
