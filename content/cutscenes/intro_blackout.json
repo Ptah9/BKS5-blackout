@@ -1,4 +1,4 @@
-{
+﻿{
   "id": "intro_blackout",
   "duration": 21.2,
   "skippable": true,
@@ -26,7 +26,7 @@
     { "t": 5.6, "sound": "brakes", "volume": 0.75, "fade": 0.1 },
     { "t": 5.6, "stop": "train", "fade": 6.5 },
     { "t": 5.7, "sub": "Поезд замедляется и встаёт." },
-    { "t": 12.6, "sound": "tunnelWind", "volume": 0.11, "fade": 3, "loop": true, "persist": true },
+    { "t": 12.6, "sound": "tunnelWind", "volume": 0.03, "fade": 3, "loop": true, "persist": true },
     { "t": 12.8, "lights": 0 },
     { "t": 12.8, "sound": "blackout", "volume": 0.9, "fade": 0.02 },
     { "t": 12.85, "sub": "Свет гаснет целиком. У дверей загораются красные огни." },

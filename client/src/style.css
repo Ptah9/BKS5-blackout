@@ -167,15 +167,12 @@ body {
   top: 49%;
   width: min(286px, 40vw);
   aspect-ratio: 9 / 16;
-  padding: 7px;
-  border-radius: 24px;
-  background: #0f1216;
-  border: 1px solid rgb(150 170 200 / 0.28);
-  box-shadow:
-    0 22px 46px rgb(0 0 0 / 0.7),
-    0 0 0 1px rgb(0 0 0 / 0.55) inset,
-    0 0 40px rgb(70 110 170 / 0.18);
-  transform: translate(-50%, -50%) rotate(-3.5deg);
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  transform: translate(-50%, -50%);
   pointer-events: none;
   z-index: 6;
   transition:

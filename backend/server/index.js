@@ -227,36 +227,60 @@ function broadcast(event) {
  */
 const radioTimers = [];
 
-function startRadio({ text, repeats = 4, interval = 4 }) {
-  for (let i = 1; i <= repeats; i++) {
-    radioTimers.push(setTimeout(() => {
-      // сама реплика — мгновенная: она звучит и затихает.
-      // Звук едет вместе с текстом: клиент не повторяет таймер, а играет
-      // дорожку ровно на каждый повтор объявления.
-      broadcast({
-        kind: 'say',
-        data: { text: `По вагону: «${text}»`, sound: 'intercom', volume: 0.9 },
-      });
+function startRadio({ text }) {
+  stopRadio();
+  const interval = 5400;
+  let repeat = 0;
 
-      if (i === 2) {
-        setTimeout(() => broadcast({
-          kind: 'thought',
-          data: {
-            id: 'radio_record',
-            text: 'Похоже, это запись. Машинист сам на связь не выйдет.',
-            until: 'announcer_off',
-          },
-        }), 600);
-      }
+  const tick = () => {
+    // выключили тангенту — запись замолкает навсегда
+    if (store.getFlag('announcer_off') === '1') {
+      stopRadio();
+      return;
+    }
 
-      if (i === 4) {
-        changeStat('panic', 12);
-        // толпа поняла, что машинист сам не выйдет: с этого момента паника
-        // растёт сама, пока её не собьют бумажкой, тангентой и словами
-        store.setFlag('panic_running', '1');
-      }
-    }, i * interval * 1000));
-  }
+    repeat++;
+
+    // сама реплика — мгновенная: она звучит и затихает.
+    // Звук едет вместе с текстом: клиент не повторяет таймер, а играет
+    // дорожку ровно на каждый повтор объявления.
+    broadcast({
+      kind: 'say',
+      data: { text: `По вагону: «${text}»`, sound: 'intercom', volume: 0.9 },
+    });
+
+    if (repeat === 1) {
+      // первый повтор ещё верят записи — толпа чуть успокаивается
+      changeStat('panic', -3);
+    }
+
+    if (repeat === 2) {
+      setTimeout(() => broadcast({
+        kind: 'thought',
+        data: {
+          id: 'radio_record',
+          text: 'Похоже, это запись. Машинист сам на связь не выйдет.',
+          until: 'announcer_off',
+        },
+      }), 600);
+    }
+
+    if (repeat === 4) {
+      changeStat('panic', 12);
+      // толпа поняла, что машинист сам не выйдет: с этого момента паника
+      // растёт сама, пока её не сбьют бумажкой, тангентой и словами
+      store.setFlag('panic_running', '1');
+    }
+
+    // дальше запись только злит: каждый следующий повтор поднимает панику
+    if (repeat > 4) changeStat('panic', 4);
+
+    if (stats.panic >= 100) {
+      for (const item of clients.values()) checkDeath(item);
+    }
+  };
+
+  radioTimers.push(setInterval(tick, interval));
 }
 
 function stopRadio() {
@@ -312,6 +336,45 @@ const KNOWN_FLAGS = new Set([
   ...props.flatMap((prop) => (prop.verbs ?? []).map((verb) => verb.flag)).filter(Boolean),
   ...(scenario.definition?.triggers ?? []).map((trigger) => trigger.flag).filter(Boolean),
 ]);
+
+/** Ключевые слова объявления: без модели, на демо интернета нет. */
+const ANNOUNCE_TOPICS = [
+  { id: 'rail', words: ['рельс', 'ток', 'напряжен', 'контактн'] },
+  { id: 'driver', words: ['машинист', 'ушел', 'кабин'] },
+  { id: 'phones', words: ['авиарежим', 'энергосбереж', 'экран'] },
+  { id: 'quiet', words: ['тихо', 'помолчите', 'слушайте', 'тишин'] },
+];
+
+/** Акт 1 закрыт: бумажка на двери, запись выключена, объявление сказано
+ *  и цель мини-игры достигнута — паника ≤ 30, доверие ≥ 80. */
+function actOneReady() {
+  return (
+    store.getFlag('cab_papered') === '1'
+    && store.getFlag('announcer_off') === '1'
+    && store.getFlag('crowd_calmed') === '1'
+    && stats.panic <= 30
+    && stats.trust >= 80
+  );
+}
+
+/** Паника 100 или доверие 0 — игрок «умирает»: личная смерть, мир продолжается. */
+function checkDeath(client) {
+  if (!client || client.dead) return;
+  if (stats.panic < 100 && stats.trust > 0) return;
+
+  client.dead = true;
+  if (client.ws.readyState !== client.ws.OPEN) return;
+  client.ws.send(JSON.stringify({
+    t: MSG.EVENT,
+    kind: 'death',
+    data: {
+      text: stats.panic >= 100
+        ? 'Толпа выходит из-под контроля. Кто-то дёргает стоп-кран, кто-то ломится в дверь.'
+        : 'Вагон больше никому не верит. Люди отворачиваются и молчат.',
+    },
+  }));
+  log(`смерть: ${client.name} (паника ${stats.panic}, доверие ${stats.trust})`);
+}
 
 /* ───────────────────────────── HTTP ───────────────────────────── */
 
@@ -664,6 +727,12 @@ function attachWebSocket(server) {
           for (const event of scenario.stateEvents()) {
             ws.send(JSON.stringify({ t: MSG.EVENT, kind: event.kind, data: event.data }));
           }
+
+          // резервный свет уже горит — опоздавший видит остаток таймера
+          const cabLeft = cabLightLeft();
+          if (cabLeft !== null) {
+            ws.send(JSON.stringify({ t: MSG.EVENT, kind: 'cab_light', data: { remaining: cabLeft } }));
+          }
           // и текущее состояние толпы
           ws.send(JSON.stringify({
             t: MSG.EVENT,
@@ -712,7 +781,7 @@ function attachWebSocket(server) {
         }
 
         case MSG.COMBINE: {
-          if (!client) return;
+          if (!client || client.dead) return;
 
           const i = Number(msg.i);
           const j = Number(msg.j);
@@ -769,6 +838,13 @@ function attachWebSocket(server) {
             changeStat('panic', -8);
             changeStat('trust', 4);
           }
+
+          // доделанный начерт — уважение всего вагона
+          if (recipe.result === 'drawing') {
+            changeStat('trust', 6);
+            changeStat('panic', -4);
+            broadcast({ kind: 'say', data: { text: 'Всеобщее уважение: начерт доделан.' } });
+          }
           return;
         }
 
@@ -787,7 +863,7 @@ function attachWebSocket(server) {
         }
 
         case MSG.INTERACT: {
-          if (!client) return;
+          if (!client || client.dead) return;
 
           const prop = props.find((item) => item.id === String(msg.id ?? ''));
           if (!prop) return;
@@ -930,7 +1006,7 @@ function attachWebSocket(server) {
         }
 
         case MSG.SAY: {
-          if (!client) return;
+          if (!client || client.dead) return;
 
           const to = String(msg.to ?? '');
           const text = String(msg.text ?? '').trim().slice(0, 300);
@@ -946,8 +1022,87 @@ function attachWebSocket(server) {
           return;
         }
 
-        case MSG.INPUT: {
+        // объявление в микрофон: без модели, по ключевым словам — честно и офлайн
+        case MSG.ANNOUNCE: {
+          if (!client || client.dead) return;
+
+          const text = String(msg.text ?? '').trim().slice(0, 300);
+          if (!text) return;
+
+          const now = Date.now();
+          if (client.lastAnnounce && now - client.lastAnnounce < 1500) return;
+          client.lastAnnounce = now;
+
+          const normalized = text.toLowerCase().replace(/ё/g, 'е');
+          const words = normalized.split(/[^a-zа-я0-9]+/).filter(Boolean);
+          const hits = ANNOUNCE_TOPICS.filter((topic) =>
+            topic.words.some((word) =>
+              word.length <= 4 ? words.includes(word) : normalized.includes(word),
+            ),
+          );
+
+          // слова игрока слышит весь вагон
+          broadcast({ kind: 'say', data: { text: `${client.name} в микрофон: «${text}»` } });
+
+          // тема, которую игрок поднимает не впервые, действует сильнее:
+          // -6 за тему и ещё -4 за повтор, доверие +5
+          client.announceTopics ??= new Set();
+          for (const topic of hits) {
+            const repeat = client.announceTopics.has(topic.id);
+            client.announceTopics.add(topic.id);
+            changeStat('trust', 5);
+            changeStat('panic', repeat ? -10 : -6);
+          }
+
+          if (hits.length >= 3) {
+            store.setFlag('crowd_calmed', '1');
+            dropNotesByFlag('crowd_calmed');
+            // клиенты должны узнать о флаге: от него зависит дверь в тоннель
+            broadcast({ kind: 'flag', data: { flag: 'crowd_calmed', value: true } });
+            scenario.fire('flag', { flag: 'crowd_calmed' });
+            broadcast({ kind: 'say', data: { text: 'Люди слушают. Гул в вагоне стихает.' } });
+            log(`объявление ${client.name}: попаданий ${hits.length} — толпа успокоена`);
+          } else {
+            broadcast({ kind: 'say', data: { text: 'Слова тонут в гуле.' } });
+            log(`объявление ${client.name}: попаданий ${hits.length} — толпа не успокоилась`);
+          }
+          checkDeath(client);
+          return;
+        }
+
+        // попытка выйти из кабины в тоннель: акт 1 ещё не закрыт — держим дверь
+        case MSG.EXIT_TRY: {
+          if (!client || client.dead) return;
+          if (actOneReady()) return;
+
+          const now = Date.now();
+          if (client.lastExitHint && now - client.lastExitHint < 2500) return;
+          client.lastExitHint = now;
+          ws.send(JSON.stringify({
+            t: MSG.EVENT,
+            kind: 'say',
+            data: { text: 'Сначала нужно успокоить вагон.' },
+          }));
+          return;
+        }
+
+        // «начать заново» после смерти: оживляем и мягко откатываем толпу,
+        // иначе игрок сразу умрёт снова на том же пороге
+        case MSG.RESTART: {
           if (!client) return;
+          client.dead = false;
+          stats.panic = 20;
+          stats.trust = 50;
+          store.setFlag('panic', 20);
+          store.setFlag('trust', 50);
+          broadcast({ kind: 'stats', data: { panic: stats.panic, trust: stats.trust, air: stats.air } });
+          ws.send(JSON.stringify({ t: MSG.EVENT, kind: 'revive', data: {} }));
+          log(`игрок ${client.name}: начал заново`);
+          return;
+        }
+
+        case MSG.INPUT: {
+          if (!client || client.dead) return;
           const x = Number(msg.x);
           const z = Number(msg.z);
           const yaw = Number(msg.yaw);
@@ -975,6 +1130,8 @@ function attachWebSocket(server) {
           }
 
           const clamped = inWorld(x, z);
+          // акт 1 не закрыт — в тоннель не пускаем: дверь мягко держит
+          if (!actOneReady() && clamped.z < -12.4) clamped.z = -12.4;
           client.x = clamped.x;
           client.z = clamped.z;
           client.yaw = yaw;
@@ -1237,6 +1394,52 @@ setInterval(() => {
   if (airTick % 2 === 0 && stats.air > 0) changeStat('air', -1);
 }, 1000);
 
+/* ── резервный свет в кабине ─────────────────────────────────────────── */
+
+const CAB_LIGHT_MS = 3 * 60 * 1000;
+
+/** Сколько секунд осталось от резервного света; null — он не горит. */
+function cabLightLeft() {
+  if (store.getFlag('cab_light') !== '1') return null;
+  const until = Number(store.getFlag('cab_light_until') ?? 0);
+  if (!until) return Math.round(CAB_LIGHT_MS / 1000);
+  return Math.max(0, Math.ceil((until - Date.now()) / 1000));
+}
+
+let cabLightSent = -1;
+setInterval(() => {
+  if (store.getFlag('cab_light') !== '1') {
+    // погасили вручную (панель, сценарий) — дедлайн не должен остаться в базе,
+    // иначе следующее включение сразу истечёт
+    if (store.getFlag('cab_light_until') !== '0') store.setFlag('cab_light_until', '0');
+    cabLightSent = -1;
+    return;
+  }
+
+  // флаг поставили, а дедлайна нет — заводим его с этого момента
+  const until = Number(store.getFlag('cab_light_until') ?? 0);
+  if (!until) {
+    store.setFlag('cab_light_until', Date.now() + CAB_LIGHT_MS);
+    return;
+  }
+
+  const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+  if (left <= 0) {
+    store.setFlag('cab_light', '0');
+    store.setFlag('cab_light_until', '0');
+    cabLightSent = -1;
+    broadcast({ kind: 'cab_light', data: { remaining: 0 } });
+    broadcast({ kind: 'flag', data: { flag: 'cab_light', value: false } });
+    log('кабина: резервный свет погас, снова бутылка');
+    return;
+  }
+
+  if (left !== cabLightSent) {
+    cabLightSent = left;
+    broadcast({ kind: 'cab_light', data: { remaining: left } });
+  }
+}, 1000);
+
 // паника после записи растёт сама: бумажка на двери и выключенная тангента
 // замедляют её, но не останавливают — толпу надо ещё и успокоить словами
 let panicAccumulator = 0;
@@ -1254,6 +1457,11 @@ setInterval(() => {
     const step = Math.floor(panicAccumulator);
     panicAccumulator -= step;
     changeStat('panic', step);
+    // мир догнал сотню сам — умирают все, кто сейчас в сети (личная смерть
+    // ставится тем, кого привёл поступок, а тут виноватых нет)
+    if (stats.panic >= 100) {
+      for (const item of clients.values()) checkDeath(item);
+    }
   }
 }, 3000);
 

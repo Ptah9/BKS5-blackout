@@ -47,6 +47,12 @@ const VENT_HALF_W = 0.3;
 /** Насколько откидывается створка, рад (≈54°). */
 const VENT_ANGLE = 0.95;
 
+/** Дверь кабины: проём 0.86 × 2.05 в торце вагона; сама створка — боковая, в cab.ts. */
+const CAB_DOOR_HALF = 0.43;
+const CAB_DOOR_HEIGHT = 2.05;
+/** Полный ход створки, рад (≈100°). */
+const CAB_DOOR_ANGLE = 1.75;
+
 interface VentState {
   /** Точка подвеса створки: верхняя кромка. */
   pivot: THREE.Group;
@@ -65,7 +71,7 @@ let ventLast = 0;
 /**
  * Открыть/закрыть форточки во всех дверях. Флаг `window_open` приходит
  * с сервера; вызов идемпотентный — повторять каждый кадр безопасно.
- * Створка откидывается за 0.45 с, шея тут ни при чём — это дверь.
+ * Створка откидывается за 0.45 с.
  */
 export function setVentOpen(open: boolean): void {
   if (vents.length === 0) return;
@@ -88,7 +94,8 @@ function stepVents(time: number): void {
     }
     if (vent.value !== vent.target) moving = true;
     const k = vent.value * vent.value * (3 - 2 * vent.value);
-    vent.pivot.rotation.z = vent.side * VENT_ANGLE * k;
+    // внутрь салона: наружу створка упиралась в полотно двери
+    vent.pivot.rotation.z = -vent.side * VENT_ANGLE * k;
   }
 
   // выгруженный чанк уносит свои створки с собой: не держим мёртвые ссылки
@@ -101,6 +108,83 @@ function stepVents(time: number): void {
   } else {
     ventTween = null;
     ventLast = 0;
+  }
+}
+
+/* ─────────────────────────── дверь кабины ─────────────────────────── */
+
+const cabDoor = { value: 0, target: 0 };
+let cabDoorPivot: THREE.Group | null = null;
+/** Знак хода створки: боковая дверь кабины открывается в другую сторону. */
+let cabDoorSign = 1;
+let cabDoorBox: Box2 | null = null;
+let cabDoorTween: number | null = null;
+let cabDoorLast = 0;
+
+/** Колодка проёма: пока дверь закрыта, она перекрывает проход. */
+const CAB_DOOR_BLOCK = {
+  minX: -CAB_DOOR_HALF - 0.03,
+  maxX: CAB_DOOR_HALF + 0.03,
+  minZ: -10.16,
+  maxZ: -9.84,
+};
+
+function applyCabDoor(): void {
+  if (cabDoorPivot) cabDoorPivot.rotation.y = cabDoor.value * CAB_DOOR_ANGLE * cabDoorSign;
+
+  const box = cabDoorBox;
+  if (!box) return;
+  if (cabDoor.value > 0.9) {
+    // уводим колодку далеко: resolveCircle считает нулевой прямоугольник
+    // линией и всё равно не пускал бы
+    box.minX = 0;
+    box.maxX = 0;
+    box.minZ = 500;
+    box.maxZ = 500;
+  } else {
+    box.minX = CAB_DOOR_BLOCK.minX;
+    box.maxX = CAB_DOOR_BLOCK.maxX;
+    box.minZ = CAB_DOOR_BLOCK.minZ;
+    box.maxZ = CAB_DOOR_BLOCK.maxZ;
+  }
+}
+
+/** Живая створка двери кабины: её строит cab.ts и отдаёт сюда на анимацию. */
+export function cabDoorLeaf(): THREE.Group | null {
+  return cabDoorPivot;
+}
+
+/** Кабина регистрирует свою боковую дверь: car.ts крутит её по флагу. */
+export function registerCabDoorPivot(pivot: THREE.Group | null, sign = 1): void {
+  cabDoorPivot = pivot;
+  cabDoorSign = sign;
+  applyCabDoor();
+}
+
+/** Открыть/закрыть дверь кабины по флагу `cab_open`. Идемпотентно. */
+export function setCabDoorOpen(open: boolean): void {
+  cabDoor.target = open ? 1 : 0;
+  if (cabDoorTween === null) cabDoorTween = requestAnimationFrame(stepCabDoor);
+}
+
+function stepCabDoor(time: number): void {
+  const dt = cabDoorLast ? Math.min(0.1, (time - cabDoorLast) / 1000) : 0.016;
+  cabDoorLast = time;
+
+  const step = dt / 0.7;
+  if (cabDoor.value !== cabDoor.target) {
+    cabDoor.value =
+      cabDoor.value < cabDoor.target
+        ? Math.min(cabDoor.target, cabDoor.value + step)
+        : Math.max(cabDoor.target, cabDoor.value - step);
+  }
+  applyCabDoor();
+
+  if (cabDoor.value !== cabDoor.target) {
+    cabDoorTween = requestAnimationFrame(stepCabDoor);
+  } else {
+    cabDoorTween = null;
+    cabDoorLast = 0;
   }
 }
 
@@ -183,6 +267,7 @@ export function buildCar(
     screen: new THREE.MeshStandardMaterial({ color: 0x0d1014, emissive: 0x0a1420, roughness: 0.3 }),
     /** Форточка: светлый металл, чтобы её было видно в темноте. */
     vent: new THREE.MeshStandardMaterial({ color: 0xc7ced3, roughness: 0.45, metalness: 0.5 }),
+    cabDoor: new THREE.MeshStandardMaterial({ color: 0x8d949b, roughness: 0.5, metalness: 0.25 }),
     ventGlass: new THREE.MeshStandardMaterial({
       color: 0x40525e,
       roughness: 0.12,
@@ -205,7 +290,11 @@ export function buildCar(
     vent: [],
     // стекло створки — отдельный меш, не инстанс: бакет только для типа
     ventGlass: [],
+    // створка двери кабины — отдельный меш, бакет только для типа
+    cabDoor: [],
   };
+
+  const colliders: Box2[] = [];
 
   const push = (
     bucket: keyof typeof materials,
@@ -233,11 +322,32 @@ export function buildCar(
     const z = zEnd * (CAR_HALF_LENGTH + 0.04);
 
     if (zEnd === -1) {
-      // впереди не стена, а проём в кабину: две части стены и перемычка сверху.
-      // Сама дверь — отдельный объект, её открывает сценарий.
-      push('panel', -0.95, CAR_HEIGHT / 2, z, 0.8, CAR_HEIGHT, 0.08);
-      push('panel', 0.95, CAR_HEIGHT / 2, z, 0.8, CAR_HEIGHT, 0.08);
-      push('panel', 0, CAR_HEIGHT - 0.2, z, 1.1, 0.4, 0.08);
+      // проём в кабину 0.86 × 2.05: две части стены и перемычка сверху
+      const sideWidth = CAR_HALF_WIDTH - CAB_DOOR_HALF;
+      push('panel', -(CAR_HALF_WIDTH + CAB_DOOR_HALF) / 2, CAR_HEIGHT / 2, z, sideWidth, CAR_HEIGHT, 0.08);
+      push('panel', (CAR_HALF_WIDTH + CAB_DOOR_HALF) / 2, CAR_HEIGHT / 2, z, sideWidth, CAR_HEIGHT, 0.08);
+      push('panel', 0, (CAB_DOOR_HEIGHT + CAR_HEIGHT) / 2, z, CAB_DOOR_HALF * 2, CAR_HEIGHT - CAB_DOOR_HEIGHT, 0.08);
+
+      // наличник проёма со стороны вагона
+      for (const dir of [-1, 1] as const) {
+        buckets.chrome.push({
+          x: dir * (CAB_DOOR_HALF + 0.025),
+          y: CAB_DOOR_HEIGHT / 2,
+          z: z + 0.06,
+          sx: 0.05,
+          sy: CAB_DOOR_HEIGHT,
+          sz: 0.05,
+        });
+      }
+      buckets.chrome.push({
+        x: 0,
+        y: CAB_DOOR_HEIGHT + 0.025,
+        z: z + 0.06,
+        sx: CAB_DOOR_HALF * 2 + 0.1,
+        sy: 0.05,
+        sz: 0.05,
+      });
+
       continue;
     }
 
@@ -469,7 +579,6 @@ export function buildCar(
   });
 
   // ── коллизии: сиденья по бортам, обрезанные по границам чанка ─────────
-  const colliders: Box2[] = [];
   for (const [runFrom, runTo] of SEAT_RUNS) {
     const from = Math.max(runFrom, zFrom);
     const to = Math.min(runTo, zTo);

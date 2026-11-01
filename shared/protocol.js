@@ -5,7 +5,7 @@
  * и клиент (TypeScript + Vite, с allowJs). Одна копия правды.
  */
 
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 5;
 
 /** Имена сообщений. Меняться могут только вместе с версией протокола. */
 export const MSG = Object.freeze({
@@ -42,6 +42,11 @@ export const MSG = Object.freeze({
   ADMIN_STATE: 'admin_state',
   // ручки панели: паника, доверие, свет, флаг
   ADMIN_SET: 'admin_set',
+  // акт 1: объявление в микрофон и попытка выйти в тоннель
+  ANNOUNCE: 'announce',
+  EXIT_TRY: 'exit_try',
+  // смерть от паники/доверия: «начать заново» после экрана
+  RESTART: 'restart',
 });
 
 /** Коды закрытия WebSocket. 4xxx — наши, прикладные. */

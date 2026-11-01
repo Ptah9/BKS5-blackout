@@ -21,11 +21,12 @@ import { ensureSession, forgetSession } from './ui/login';
 import { ChunkManager } from './world/chunks';
 import { Characters, type CharacterId, type SceneryItem } from './world/characters';
 import { Passengers, type PassengerSpot } from './world/passengers';
-import { CAR_HEIGHT, setVentOpen } from './world/car';
+import { CAR_HEIGHT, setVentOpen, setCabDoorOpen } from './world/car';
 import { buildCab } from './world/cab';
 import { buildTunnel } from './world/tunnel';
 import { buildPlatform } from './world/platform';
 import { createPropMesh } from './world/propMeshes';
+import { ViewHand } from './world/viewHand';
 import type { Box2 } from './world/collision';
 import type { LightSpot } from './world/location';
 
@@ -82,6 +83,8 @@ async function main(): Promise<void> {
 
   /** Игра начинается по кнопке, чтобы у всех был один старт. */
   let gameStarted = false;
+  /** Смерть от паники/доверия: ввод заблокирован, висит экран «начать заново». */
+  let dead = false;
   const elHint = document.getElementById('hint') as HTMLElement;
   const elObjective = document.getElementById('objective') as HTMLElement;
 
@@ -105,6 +108,8 @@ async function main(): Promise<void> {
   scene.environmentIntensity = 0.25;
 
   const camera = new THREE.PerspectiveCamera(72, 1, 0.05, 80);
+  /** Рука от первого лица: предмет в кисти и телефон в интро. */
+  const viewHand = new ViewHand(camera);
 
   /* ───────────────────────────── мир ───────────────────────────── */
 
@@ -241,6 +246,8 @@ async function main(): Promise<void> {
   let lampPlaced = false;
   /** true — свет уже от бутылки с телефоном: холодный и тусклее, чем городской. */
   let lampMode = false;
+  /** true — в кабине включили резервный свет: тёплый городской режим и таймер. */
+  let cabLightOn = false;
   /** Гул тоннеля: включается на входе за кабину и гаснет при возврате. */
   let tunnelHumOn = false;
   /** Песня у Альтушки: включается один раз, когда интро позади. */
@@ -289,14 +296,19 @@ async function main(): Promise<void> {
     lastAppliedLights = lightsValue;
     lastChunkVersion = chunks.version;
 
+    // резервный свет в кабине: пока горит — тёплый городской режим на полную,
+    // независимо от сценария и от лампы из бутылки
+    const level = cabLightOn ? 1 : lightsValue;
+    const warm = !lampMode || cabLightOn;
+
     for (const root of lampRoots) {
       root.traverse((node) => {
         if (node.name === 'lamp') {
           const mesh = node as THREE.Mesh;
           const material = mesh.material as THREE.MeshStandardMaterial;
           // до блэкаута плафоны тёплые, от лампы из бутылки — холодные
-          if (lampMode) material.emissive.setRGB(0.62, 0.78, 1).multiplyScalar(lightsValue * 0.9);
-          else material.emissive.setRGB(1, 0.97, 0.88).multiplyScalar(lightsValue * 0.9);
+          if (warm) material.emissive.setRGB(1, 0.97, 0.88).multiplyScalar(level * 0.9);
+          else material.emissive.setRGB(0.62, 0.78, 1).multiplyScalar(level * 0.9);
           return;
         }
 
@@ -311,27 +323,27 @@ async function main(): Promise<void> {
 
     // Свет локаций. Общий уровень тот же, что у вагона: в блэкауте он ноль,
     // и тоннель с платформой не светятся; после крафта холодный оттенок.
-    const tint = lampMode ? COLD_LIGHT : WARM_LIGHT;
+    const tint = warm ? WARM_LIGHT : COLD_LIGHT;
     for (const spot of locationLights) {
-      spot.light.intensity = spot.intensity * lightsValue;
+      spot.light.intensity = spot.intensity * level;
       spot.light.color.copy(spot.base).lerp(tint, 0.45);
     }
 
-    if (lampMode) {
+    if (!warm) {
       // свет от бутылки с телефоном: холодный, приглушённый
-      ambient.intensity = 0.16 + lightsValue * 0.45;
-      scene.environmentIntensity = 0.25 + lightsValue * 0.3;
+      ambient.intensity = 0.16 + level * 0.45;
+      scene.environmentIntensity = 0.25 + level * 0.3;
       for (const light of fillLights) {
         light.color.setHex(0x9dc2ff);
-        light.intensity = lightsValue * 3.3;
+        light.intensity = level * 3.3;
       }
     } else {
       // городское питание: тёплое и ярче
-      ambient.intensity = 0.16 + lightsValue * 0.55;
-      scene.environmentIntensity = 0.25 + lightsValue * 0.35;
+      ambient.intensity = 0.16 + level * 0.55;
+      scene.environmentIntensity = 0.25 + level * 0.35;
       for (const light of fillLights) {
         light.color.setHex(0xffe4b8);
-        light.intensity = lightsValue * 5.4;
+        light.intensity = level * 5.4;
       }
     }
   }
@@ -349,9 +361,12 @@ async function main(): Promise<void> {
   let worldPanic = 20;
 
   /** Паника, доверие и воздух приходят с сервера: это состояние мира. */
+  let lastTrust = 50;
   function setStats(panic: number, trust: number, air: number): void {
     worldPanic = panic;
+    lastTrust = trust;
     soundscape.setPanic(panic);
+    hud.setAnnounceGoal(announceMode, panic, trust);
     elPanic.textContent = String(panic);
     elTrust.textContent = String(trust);
     elAir.textContent = String(air);
@@ -374,21 +389,29 @@ async function main(): Promise<void> {
   const elPhoneNet = document.getElementById('phone-net') as HTMLElement;
   const elPhoneVideo = document.getElementById('phone-video') as HTMLVideoElement;
 
-  // PS1-экран телефона: видео декодируется как обычно (и звучит), но на экран
-  // выводим маленький canvas, растянутый без сглаживания — то же «зерно», что у мира.
-  const PHONE_W = 90;
-  const PHONE_H = 160;
+  // PS1-телефон: видео декодируется как обычно (и звучит), но на экран выводим
+  // canvas с буфером и рубим сглаживание; корпус и надпись «нет сети» рисуются
+  // там же — никакого DOM-текста поверх мира.
+  const PHONE_W = 128;
+  const PHONE_H = 228;
+  const SCREEN_X = 19;
+  const SCREEN_Y = 34;
+  const SCREEN_W = 90;
+  const SCREEN_H = 160;
+  /** true — на экране плашка «нет сети» (рисуется в буфере, не в DOM). */
+  let phoneNet = false;
+  let netPlate: HTMLCanvasElement | null = null;
+
   const elPhoneScreen = document.createElement('canvas');
   elPhoneScreen.width = PHONE_W;
   elPhoneScreen.height = PHONE_H;
   elPhoneScreen.style.cssText = [
     'position:absolute',
-    'inset:7px',
-    'width:calc(100% - 14px)',
-    'height:calc(100% - 14px)',
-    'border-radius:18px',
+    'inset:0',
+    'width:100%',
+    'height:100%',
     'image-rendering:pixelated',
-    'background:#000',
+    'background:transparent',
     'pointer-events:none',
   ].join(';');
   elPhoneVideo.style.opacity = '0';
@@ -396,17 +419,76 @@ async function main(): Promise<void> {
   const phoneCtx = elPhoneScreen.getContext('2d');
   if (phoneCtx) phoneCtx.imageSmoothingEnabled = false;
 
-  /** Кадр телефона в маленький буфер: видео портретное, режем по «cover». */
+  /** Плашка «нет сети»: текст режется порогом, поэтому буквы без сглаживания. */
+  function makeNetPlate(): HTMLCanvasElement {
+    const layer = document.createElement('canvas');
+    layer.width = SCREEN_W;
+    layer.height = SCREEN_H;
+    const g = layer.getContext('2d');
+    if (!g) return layer;
+
+    g.fillStyle = '#ffffff';
+    g.font = 'bold 13px "Courier New", monospace';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText('нет сети', SCREEN_W / 2, SCREEN_H / 2);
+
+    const img = g.getImageData(0, 0, SCREEN_W, SCREEN_H);
+    const data = img.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const on = data[i + 3] > 100;
+      data[i] = 231;
+      data[i + 1] = 236;
+      data[i + 2] = 243;
+      data[i + 3] = on ? 255 : 0;
+    }
+    g.putImageData(img, 0, 0);
+    return layer;
+  }
+
+  /** Кадр телефона: корпус, экран с видео, плашка. Всё в одном буфере. */
   function drawPhoneFrame(): void {
     if (!phoneCtx || elPhone.classList.contains('hidden')) return;
-    if (elPhoneVideo.readyState < 2 || elPhoneVideo.videoWidth === 0) return;
+    const ctx = phoneCtx;
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, PHONE_W, PHONE_H);
 
-    const vw = elPhoneVideo.videoWidth;
-    const vh = elPhoneVideo.videoHeight;
-    const scale = Math.max(PHONE_W / vw, PHONE_H / vh);
-    const sw = PHONE_W / scale;
-    const sh = PHONE_H / scale;
-    phoneCtx.drawImage(elPhoneVideo, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, PHONE_W, PHONE_H);
+    // корпус: жёсткие края, без теней и размытий
+    ctx.fillStyle = '#0b0e13';
+    ctx.fillRect(0, 0, PHONE_W, PHONE_H);
+    ctx.fillStyle = '#161b23';
+    ctx.fillRect(2, 2, PHONE_W - 4, PHONE_H - 4);
+    ctx.fillStyle = '#232a34';
+    ctx.fillRect(52, 12, 24, 3);
+    // рамка экрана
+    ctx.fillStyle = '#090b0f';
+    ctx.fillRect(SCREEN_X - 2, SCREEN_Y - 2, SCREEN_W + 4, SCREEN_H + 4);
+
+    if (elPhoneVideo.readyState >= 2 && elPhoneVideo.videoWidth > 0) {
+      const vw = elPhoneVideo.videoWidth;
+      const vh = elPhoneVideo.videoHeight;
+      const scale = Math.max(SCREEN_W / vw, SCREEN_H / vh);
+      const sw = SCREEN_W / scale;
+      const sh = SCREEN_H / scale;
+      ctx.drawImage(
+        elPhoneVideo,
+        (vw - sw) / 2,
+        (vh - sh) / 2,
+        sw,
+        sh,
+        SCREEN_X,
+        SCREEN_Y,
+        SCREEN_W,
+        SCREEN_H,
+      );
+    }
+
+    if (phoneNet) {
+      ctx.fillStyle = 'rgba(6, 8, 11, 0.74)';
+      ctx.fillRect(SCREEN_X, SCREEN_Y, SCREEN_W, SCREEN_H);
+      if (!netPlate) netPlate = makeNetPlate();
+      ctx.drawImage(netPlate, SCREEN_X, SCREEN_Y);
+    }
   }
 
   const cutscene = new CutscenePlayer(
@@ -421,6 +503,7 @@ async function main(): Promise<void> {
         switch (action) {
           case 'play': {
             if (src && elPhoneVideo.src !== location.origin + src) elPhoneVideo.src = src;
+            phoneNet = false;
             elPhoneNet.classList.add('hidden');
             elPhone.classList.remove('lowered');
             elPhone.classList.remove('hidden');
@@ -441,7 +524,9 @@ async function main(): Promise<void> {
             elPhoneVideo.pause();
             return;
           case 'net':
-            elPhoneNet.classList.remove('hidden');
+            // плашку рисуем в буфере телефона, DOM-текст остаётся скрытым
+            phoneNet = true;
+            elPhoneNet.classList.add('hidden');
             return;
           case 'lower':
             // экран уходит вниз: сначала телефон, потом подъём
@@ -449,6 +534,7 @@ async function main(): Promise<void> {
             return;
           case 'hide':
             elPhoneVideo.pause();
+            phoneNet = false;
             elPhone.classList.add('hidden');
             elPhone.classList.remove('lowered');
             elPhoneNet.classList.add('hidden');
@@ -458,6 +544,7 @@ async function main(): Promise<void> {
       onEnd: (yaw, pitch) => {
         elCutscene.classList.add('hidden');
         elCutsceneSub.classList.add('hidden');
+        viewHand.holdPhone(false);
 
         // телефон уже убран — теперь игрок встаёт с сиденья
         player.setView(yaw, pitch);
@@ -479,6 +566,8 @@ async function main(): Promise<void> {
       const data = (await response.json()) as CutsceneData;
       cutscene.start(data);
       elCutscene.classList.remove('hidden');
+      // рука с телефоном: персонаж поднимает его к глазам в интро
+      viewHand.holdPhone(id === 'intro_blackout');
       hud.say('');
     } catch (error) {
       console.info('[катсцена] не загрузилась:', id, error);
@@ -579,6 +668,8 @@ async function main(): Promise<void> {
   let nearNpc: RemotePlayer | null = null;
   let talkingTo: RemotePlayer | null = null;
   let chatOpen = false;
+  /** Чат открыт для объявления в микрофон, а не для разговора с NPC. */
+  let announceMode = false;
   let subtitleTimer = 0;
 
   /**
@@ -626,6 +717,7 @@ async function main(): Promise<void> {
   }
 
   function openChat(npc: RemotePlayer): void {
+    announceMode = false;
     talkingTo = npc;
     chatOpen = true;
     elChatName.textContent = npc.name;
@@ -635,11 +727,42 @@ async function main(): Promise<void> {
     elChatInput.focus();
   }
 
+  /**
+   * Объявление в микрофон: то же поле, что у чата с NPC, только адресат — вагон.
+   * Текст оценивает сервер по ключевым словам; модель тут не нужна.
+   */
+  function openAnnounce(): void {
+    announceMode = true;
+    talkingTo = null;
+    chatOpen = true;
+    elChatName.textContent = 'в микрофон';
+    elChat.classList.remove('hidden');
+    elChatInput.value = '';
+    elChatInput.placeholder = 'сказать всему вагону…';
+    document.exitPointerLock();
+    elChatInput.focus();
+    hud.setAnnounceGoal(true, worldPanic, lastTrust);
+  }
+
   function closeChat(): void {
     chatOpen = false;
+    announceMode = false;
     talkingTo = null;
     elChat.classList.add('hidden');
     elChatInput.blur();
+    elChatInput.placeholder = 'сказать…';
+    hud.setAnnounceGoal(false, worldPanic, lastTrust);
+  }
+
+  /** Акт 1 закрыт: флаги, бумажка/запись/объявление и цель мини-игры. */
+  function actOneReady(): boolean {
+    return (
+      worldFlags.has('cab_papered')
+      && worldFlags.has('announcer_off')
+      && worldFlags.has('crowd_calmed')
+      && worldPanic <= 30
+      && lastTrust >= 80
+    );
   }
 
   hud.say('Темно. В кармане бутылка воды и телефон — экран светит синим.');
@@ -781,6 +904,27 @@ async function main(): Promise<void> {
             lastAppliedLights = -1; // заставим пересчитать свет и цвет плафонов
           }
           return;
+        case 'death': {
+          // личная смерть: ввод заблокирован, мир живёт дальше
+          dead = true;
+          document.exitPointerLock();
+          hud.showDeath(String(data.text ?? 'Толпа выходит из-под контроля.'));
+          return;
+        }
+        case 'revive': {
+          dead = false;
+          hud.hideDeath();
+          return;
+        }
+        case 'cab_light': {
+          // резервный свет в кабине: горит — тёплый городской режим и таймер
+          const remaining = Number(data.remaining ?? 0);
+          cabLightOn = remaining > 0;
+          hud.setCabTimer(cabLightOn ? remaining : null);
+          lastAppliedLights = -1; // режим меняется не по катсцене — пересчитать сразу
+          updateLights();
+          return;
+        }
         case 'flag':
           // дверь кабины открыли — проход свободен, створка отходит
           if (data.flag === 'cab_open') cabOpen = true;
@@ -1006,8 +1150,15 @@ async function main(): Promise<void> {
     }
 
     if (event.code === 'KeyE' && !chatOpen && !bagOpen && !cutscene.playing) {
+      if (!nearProp || !nearPropVerb) return;
+      // «сказать в микрофон» — это не действие с предметом, а ввод текста:
+      // открываем то же поле, что у чата с персонажем
+      if (nearPropVerb.id === 'announce') {
+        openAnnounce();
+        return;
+      }
       // в мир идём с тем предметом, что выбран в нижней полоске
-      if (nearProp && nearPropVerb) net.interact(nearProp.id, nearPropVerb.id, inventory.selectedItem);
+      net.interact(nearProp.id, nearPropVerb.id, inventory.selectedItem);
       return;
     }
 
@@ -1027,7 +1178,17 @@ async function main(): Promise<void> {
     event.preventDefault();
 
     const text = elChatInput.value.trim();
-    if (!text || !talkingTo) return;
+    if (!text) return;
+
+    // объявление в микрофон: текст уходит серверу, он и решает, что услышали
+    if (announceMode) {
+      net.announce(text);
+      elChatInput.value = '';
+      closeChat();
+      return;
+    }
+
+    if (!talkingTo) return;
 
     const npcId = npcIds[talkingTo.id - 1000];
     if (npcId) net.say(npcId, text);
@@ -1045,6 +1206,8 @@ async function main(): Promise<void> {
   let hudAccumulator = 0;
   let lastFrame = performance.now();
   let lastZone = '';
+  /** Когда в последний раз стучались в тоннель, чтобы не спамить сервер. */
+  let lastExitTry = 0;
 
   const loop = startLoop(
     (dt) => {
@@ -1055,16 +1218,30 @@ async function main(): Promise<void> {
         input.consumeLook();
       } else if (gameStarted && !chatOpen && !bagOpen && !adminOpen) {
         player.update(dt, input, walkColliders(), bounds);
+
+      // выбранный предмет в руке; setItem идемпотентен
+      viewHand.setItem(inventory.selectedItem);
+      viewHand.update(dt);
+      }
+
+      // из кабины в тоннель — только когда акт 1 закрыт: дверь мягко держит
+      if (gameStarted && player.position.z < -12.4 && !actOneReady()) {
+        player.teleport(player.position.x, -12.4, player.facing);
+        const now = performance.now();
+        if (now - lastExitTry > 2500) {
+          lastExitTry = now;
+          net.exitTry();
+        }
       }
 
       // гул тоннеля не запускаем и не гасим, а делаем громче/тише:
       // после остановки поезда он уже играет тихо из интро
       if (!tunnelHumOn && player.position.z < -12.5) {
         tunnelHumOn = true;
-        soundscape.setChannelVolume('tunnelWind', 0.3, 2.5);
+        soundscape.setChannelVolume('tunnelWind', 0.07, 2.5);
       } else if (tunnelHumOn && player.position.z > -10) {
         tunnelHumOn = false;
-        soundscape.setChannelVolume('tunnelWind', 0.11, 2);
+        soundscape.setChannelVolume('tunnelWind', 0.03, 2);
       }
 
       // песня у Альтушки: по кругу, тихо, громче рядом с ней и тише к краям вагона;
@@ -1076,14 +1253,14 @@ async function main(): Promise<void> {
         dinastyOn = true;
         dinastyAt = altAt;
         soundscape.play('dinasty', {
-          volume: 0.08,
+          volume: 0.003,
           fade: 4,
           loop: true,
           persist: true,
           at: altAt,
-          near: 2,
-          far: 8,
-          nearVolume: 0.3,
+          near: 1,
+          far: 2.5,
+          nearVolume: 0.012,
         });
       } else if (dinastyOn && Math.hypot(altAt[0] - dinastyAt[0], altAt[1] - dinastyAt[1]) > 0.25) {
         dinastyAt = altAt;
@@ -1095,6 +1272,8 @@ async function main(): Promise<void> {
 
       // створки форточек в дверях: открываются по флагу, вызов идемпотентный
       setVentOpen(worldFlags.has('window_open'));
+      // дверь кабины машиниста: на петлях, следует за флагом cab_open
+      setCabDoorOpen(worldFlags.has('cab_open'));
 
       // ближайший персонаж: подсказка «T — поговорить»
       let closest: RemotePlayer | null = null;

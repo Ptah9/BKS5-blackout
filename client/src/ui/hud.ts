@@ -23,11 +23,17 @@ export class Hud {
   private readonly notesListEl = document.getElementById('notes-list') as HTMLElement;
 
   private readonly slotEls: HTMLElement[] = [];
+  private readonly cabTimerEl: HTMLDivElement;
+  private readonly goalEl: HTMLDivElement;
+  private readonly deathEl: HTMLDivElement;
+  private readonly deathTextEl: HTMLDivElement;
   private thoughtTimer = 0;
   private notesSignature = '';
 
   /** Клик по слоту в рюкзаке: решает игра, что с ним делать. */
   onSlot?: (index: number) => void;
+  /** «Начать заново» на экране смерти. */
+  onRestart?: () => void;
 
   constructor(private readonly inventory: Inventory) {
     this.invEl.innerHTML = '';
@@ -49,7 +55,129 @@ export class Hud {
 
       this.slotEls.push(strip, cell);
     }
+
+    // таймер резервного света: верхний левый угол, блокнот справа не занят
+    this.cabTimerEl = document.createElement('div');
+    this.cabTimerEl.id = 'cab-timer';
+    this.cabTimerEl.style.cssText = [
+      'position:fixed',
+      'left:16px',
+      'top:16px',
+      'z-index:12',
+      'display:none',
+      'padding:6px 10px',
+      'border-radius:6px',
+      'background:rgb(8 11 16 / 0.72)',
+      'border:1px solid rgb(255 200 140 / 0.35)',
+      'color:#ffd9a0',
+      'font:18px/1.2 Consolas,monospace',
+      'letter-spacing:0.06em',
+      'pointer-events:none',
+    ].join(';');
+    document.body.appendChild(this.cabTimerEl);
+
+    // мини-игра объявления: два крупных числа, пока игрок говорит
+    this.goalEl = document.createElement('div');
+    this.goalEl.id = 'announce-goal';
+    this.goalEl.style.cssText = [
+      'position:fixed',
+      'left:50%',
+      'top:14%',
+      'transform:translateX(-50%)',
+      'z-index:14',
+      'display:none',
+      'gap:34px',
+      'align-items:flex-end',
+      'padding:12px 22px',
+      'border-radius:8px',
+      'background:rgb(8 11 16 / 0.8)',
+      'border:1px solid rgb(120 140 170 / 0.3)',
+      'color:#c9d6e6',
+      'font:12px/1.3 Consolas,monospace',
+      'pointer-events:none',
+      'white-space:nowrap',
+    ].join(';');
+    document.body.appendChild(this.goalEl);
+
+    // экран смерти: личная, мир продолжается
+    this.deathEl = document.createElement('div');
+    this.deathEl.id = 'death';
+    this.deathEl.style.cssText = [
+      'position:fixed',
+      'inset:0',
+      'z-index:60',
+      'display:none',
+      'flex-direction:column',
+      'align-items:center',
+      'justify-content:center',
+      'gap:18px',
+      'padding:0 12vw',
+      'background:rgb(4 5 8 / 0.92)',
+      'color:#e7ecf3',
+      'font:15px/1.5 Consolas,monospace',
+      'text-align:center',
+    ].join(';');
+    this.deathTextEl = document.createElement('div');
+    this.deathTextEl.style.cssText = 'max-width:620px;font-size:18px';
+    const restart = document.createElement('button');
+    restart.type = 'button';
+    restart.textContent = 'Начать заново';
+    restart.style.cssText = [
+      'margin-top:6px',
+      'padding:8px 18px',
+      'border-radius:6px',
+      'border:1px solid rgb(150 175 210 / 0.45)',
+      'background:rgb(20 28 38 / 0.95)',
+      'color:#dbe6f3',
+      'font:14px Consolas,monospace',
+      'cursor:pointer',
+    ].join(';');
+    restart.addEventListener('click', () => this.onRestart?.());
+    this.deathEl.append(this.deathTextEl, restart);
+    document.body.appendChild(this.deathEl);
+
     this.renderSlots();
+  }
+
+  /** Цель мини-игры: паника ≤ 30 и доверие ≥ 80. Пока не достигнута — видна. */
+  setAnnounceGoal(visible: boolean, panic: number, trust: number): void {
+    if (!visible || (panic <= 30 && trust >= 80)) {
+      this.goalEl.style.display = 'none';
+      this.goalEl.innerHTML = '';
+      return;
+    }
+
+    const panicColor = panic <= 30 ? '#9fe3a0' : '#ffb27a';
+    const trustColor = trust >= 80 ? '#9fe3a0' : '#9ecbff';
+    this.goalEl.style.display = 'flex';
+    this.goalEl.innerHTML = `
+      <div>ПАНИКА ТОЛПЫ<br><b style="font-size:42px;color:${panicColor}">${panic}</b><span style="color:#6f8096"> / 30</span></div>
+      <div>ДОВЕРИЕ<br><b style="font-size:42px;color:${trustColor}">${trust}</b><span style="color:#6f8096"> / 80</span></div>
+    `;
+  }
+
+  /** Экран смерти с текстом сцены и кнопкой «Начать заново». */
+  showDeath(text: string): void {
+    this.deathTextEl.textContent = text;
+    this.deathEl.style.display = 'flex';
+  }
+
+  hideDeath(): void {
+    this.deathEl.style.display = 'none';
+  }
+
+  /** Остаток резервного света в углу; null — света нет, таймер убран. */
+  setCabTimer(seconds: number | null): void {
+    if (seconds === null || seconds <= 0) {
+      this.cabTimerEl.style.display = 'none';
+      this.cabTimerEl.textContent = '';
+      return;
+    }
+
+    const minutes = Math.floor(seconds / 60);
+    const rest = seconds % 60;
+    this.cabTimerEl.textContent = `резерв ${minutes}:${String(rest).padStart(2, '0')}`;
+    this.cabTimerEl.style.display = 'block';
   }
 
   renderSlots(): void {

@@ -110,6 +110,24 @@ export class Net {
     this.ws.send(JSON.stringify({ t: MSG.ADMIN_SET, kind, value, flag: flag ?? null }));
   }
 
+  /** Объявление в микрофон: сервер оценит слова по ключевым. */
+  announce(text: string): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.ANNOUNCE, text }));
+  }
+
+  /** Попытка выйти в тоннель: сервер ответит текстом, если акт 1 не закрыт. */
+  exitTry(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.EXIT_TRY }));
+  }
+
+  /** «Начать заново» после смерти: оживляет и мягко откатывает толпу. */
+  restart(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.RESTART }));
+  }
+
   /** Сказать персонажу. Ответ придёт потоком через onNpcReply. */  say(npcId: string, text: string): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({ t: MSG.SAY, to: npcId, text }));

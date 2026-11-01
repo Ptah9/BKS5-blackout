@@ -17,6 +17,7 @@
 
 import * as THREE from 'three';
 
+import { cabDoorLeaf, registerCabDoorPivot } from './car';
 import type { Box2 } from './collision';
 import type { Textures } from '../render/textures';
 import { envTextures } from '../render/env-textures';
@@ -46,7 +47,9 @@ const SIDE_DOOR = { z0: -12.28, z1: -11.63, height: 1.95 };
 /** Лобовое стекло справа от двери. */
 const WINDSHIELD = { minX: -0.2, maxX: 0.92, y0: 1.14, y1: 1.9 };
 
-const PANEL_SLOPE = -0.58;
+// пульт наклонён НА машиниста: нормаль панели смотрит в салон (+Z),
+// раньше знак был отрицательным и приборы смотрели в лобовую стену
+const PANEL_SLOPE = 0.58;
 const PANEL_CENTER = new THREE.Vector3(0.42, 1.015, -12.47);
 
 export function buildCab(textures: Textures): Location {
@@ -155,26 +158,17 @@ export function buildCab(textures: Textures): Location {
   darkBox.span(BACK_DOOR.half, BACK_DOOR.half + 0.05, 0, BACK_DOOR.height + 0.05, CAB.zBack - 0.1, CAB.zBack - 0.02);
   darkBox.span(-BACK_DOOR.half - 0.05, BACK_DOOR.half + 0.05, BACK_DOOR.height, BACK_DOOR.height + 0.05, CAB.zBack - 0.1, CAB.zBack - 0.02);
 
-  // дверь из вагона распахнута внутрь кабины и лежит в левом дальнем углу:
-  // так она не перекрывает проход от вагона к боковой двери
-  const backDoor = new THREE.Group();
-  backDoor.name = 'cab-back-door';
-  backDoor.position.set(-BACK_DOOR.half, 0, CAB.zBack - 0.04);
-  backDoor.rotation.y = 2.4;
-  const backLeaf = new THREE.Mesh(new THREE.BoxGeometry(BACK_DOOR.half * 2, BACK_DOOR.height - 0.02, 0.05), paint);
-  backLeaf.position.set(BACK_DOOR.half, (BACK_DOOR.height - 0.02) / 2, 0);
-  backDoor.add(backLeaf);
-  const backLeafGlass = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.55, 0.06), glass);
-  backLeafGlass.position.set(BACK_DOOR.half, 1.45, 0);
-  backDoor.add(backLeafGlass);
-  group.add(backDoor);
+  // Створки из вагона здесь больше нет: настоящая дверь на петлях живёт
+  // в car.ts (setCabDoorOpen). Две створки в одном проёме — это и была
+  // «вторая дверь», которую видно в кабине.
 
   /* ── боковая дверь на путь ─────────────────────────────────────────── */
 
   const sideDoor = new THREE.Group();
   sideDoor.name = 'cab-side-door';
   sideDoor.position.set(-WALL_X + WALL, 0, SIDE_DOOR.z1);
-  sideDoor.rotation.y = -1.75; // распахнута наружу, к лобовой части
+  // Дверь кабины — эта, боковая. Закрыта, открывается наружу по флагу cab_open.
+  sideDoor.rotation.y = 0;
   const sideLeafW = SIDE_DOOR.z1 - SIDE_DOOR.z0;
   const sideLeaf = new THREE.Mesh(new THREE.BoxGeometry(0.05, SIDE_DOOR.height - 0.02, sideLeafW), paint);
   sideLeaf.position.set(0, (SIDE_DOOR.height - 0.02) / 2, -sideLeafW / 2);
@@ -183,6 +177,8 @@ export function buildCab(textures: Textures): Location {
   sideGlass.position.set(0, 1.42, -0.4);
   sideDoor.add(sideGlass);
   group.add(sideDoor);
+  // car.ts крутит её тем же setCabDoorOpen, что и прочие двери
+  registerCabDoorPivot(sideDoor, -1);
 
   // петли и ручка
   chromeTube.cyl(-WALL_X + WALL + 0.04, 0.35, SIDE_DOOR.z1, -WALL_X + WALL + 0.04, 1.55, SIDE_DOOR.z1, 0.02);
@@ -193,20 +189,9 @@ export function buildCab(textures: Textures): Location {
   darkBox.span(-WALL_X - 0.01, -WALL_X + WALL + 0.01, 0, SIDE_DOOR.height + 0.04, SIDE_DOOR.z1, SIDE_DOOR.z1 + 0.04);
   darkBox.span(-WALL_X - 0.01, -WALL_X + WALL + 0.01, SIDE_DOOR.height, SIDE_DOOR.height + 0.04, SIDE_DOOR.z0 - 0.04, SIDE_DOOR.z1 + 0.04);
 
-  /* ── дверь в тоннель ───────────────────────────────────────────────── */
-
-  const frontDoor = new THREE.Group();
-  frontDoor.name = 'cab-front-door';
-  frontDoor.position.set(FRONT_DOOR.maxX, 0, CAB.zFront - WALL);
-  frontDoor.rotation.y = -1.95; // наружу, в тоннель, почти вдоль стены
-  const frontLeafW = FRONT_DOOR.maxX - FRONT_DOOR.minX;
-  const frontLeaf = new THREE.Mesh(new THREE.BoxGeometry(frontLeafW, FRONT_DOOR.height - 0.02, 0.05), paint);
-  frontLeaf.position.set(-frontLeafW / 2, (FRONT_DOOR.height - 0.02) / 2, 0);
-  frontDoor.add(frontLeaf);
-  const frontGlass = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.62, 0.06), glass);
-  frontGlass.position.set(-frontLeafW / 2, 1.42, 0);
-  frontDoor.add(frontGlass);
-  group.add(frontDoor);
+  /* ── проём в тоннель ───────────────────────────────────────────────── */
+  // Дверь в переднем торце убрана: двери в начале поезда не бывает.
+  // Остаётся открытый проём — это путь наружу, но не створка.
 
   // наличник проёма в тоннель
   darkBox.span(FRONT_DOOR.minX - 0.04, FRONT_DOOR.minX, 0, FRONT_DOOR.height + 0.04, zf - 0.05, zf + 0.05);
@@ -469,8 +454,6 @@ export function buildCab(textures: Textures): Location {
     { minX: stoolX - 0.19, maxX: stoolX + 0.19, minZ: stoolZ - 0.19, maxZ: stoolZ + 0.19 },
     // шкаф
     { minX: 0.88, maxX: 1.1, minZ: -10.74, maxZ: -10.32 },
-    // створка двери из вагона, лежащая в левом углу
-    { minX: -1.1, maxX: -0.42, minZ: -10.72, maxZ: -10.0 },
   ];
 
   const lightSpots: LightSpot[] = [
@@ -486,9 +469,11 @@ export function buildCab(textures: Textures): Location {
   group.userData.interactive = { microphone: micHead, tangent: handset, tube };
   group.userData.stools = [stoolTop, secondStool];
   group.userData.door = {
-    back: backDoor,
+    // створка из вагона — в car.ts, тут отдаём её живую ссылку
+    get back(): THREE.Group | null {
+      return cabDoorLeaf();
+    },
     side: sideDoor,
-    front: frontDoor,
   };
 
   return {

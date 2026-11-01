@@ -1,12 +1,49 @@
 /**
  * Мелкие предметы в мире: то, что можно взять руками.
  *
- * Раньше это были только точки взаимодействия — подсказка появлялась,
- * а смотреть было не на что. Здесь каждой вещи рисуется простая фигура
- * по её id; расстановка по-прежнему живёт в content/props.json.
+ * Модели — из `predmets/` (копии в `client/public/models/items/`), грузятся
+ * асинхронно и подменяют самодельную фигурку, когда придут. До загрузки
+ * (и если файла нет) остаётся прежняя простая фигура: предмет не исчезает
+ * и не мигает. Расстановка по-прежнему живёт в content/props.json.
+ *
+ * Масштабы: файлы уже в метрах, подгонка нужна только аптечке (в модели
+ * 0.07 м высоты вместо 0.25) и тубусу (0.8 м вместо 0.6).
  */
 
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+interface ItemModel {
+  file: string;
+  /** Сдвиг модели в мире: чтобы не вставала в стену. */
+  offset?: [number, number, number];
+  /** Множитель к метрам из glb, если автор нарисовал не в масштабе. */
+  scale?: number;
+}
+
+/** Что во что: id предмета в content/props.json → файл модели. */
+const ITEMS: Record<string, ItemModel> = {
+  // в кабине
+  cab_paper: { file: 'drawing.glb' },
+  paper: { file: 'drawing.glb' },
+  cab_medkit: { file: 'medkit.glb', scale: 2.2, offset: [-0.12, 0, 0] },
+  cab_voltmeter: { file: 'voltmeter.glb' },
+  cab_tube: { file: 'tube.glb', scale: 0.75 },
+  cab_pencil: { file: 'pencil.glb' },
+  cab_candy: { file: 'candy.glb', scale: 0.8 },
+
+  // те же вещи по «человеческим» именам — на случай предметов в других локациях
+  bottle: { file: 'bottle.glb' },
+  phone: { file: 'phone.glb' },
+  flashlight: { file: 'flashlight.glb' },
+  candy: { file: 'candy.glb' },
+  medkit: { file: 'medkit.glb', scale: 2.2 },
+  voltmeter: { file: 'voltmeter.glb' },
+  tube: { file: 'tube.glb', scale: 0.75 },
+  pencil: { file: 'pencil.glb' },
+  drawing: { file: 'drawing.glb' },
+  splint: { file: 'splint.glb' },
+};
 
 const MATERIALS = {
   paper: new THREE.MeshStandardMaterial({ color: 0xd9d3c2, roughness: 0.95 }),
@@ -19,8 +56,50 @@ const MATERIALS = {
   candy: new THREE.MeshStandardMaterial({ color: 0xc46a8f, roughness: 0.7 }),
 };
 
-/** Простая фигура под конкретный предмет. */
-export function createPropMesh(id: string): THREE.Object3D | null {
+const loader = new GLTFLoader();
+const cache = new Map<string, Promise<THREE.Object3D | null>>();
+
+/** Один запрос на файл, сколько бы предметов его ни просило. */
+function loadModel(file: string): Promise<THREE.Object3D | null> {
+  const cached = cache.get(file);
+  if (cached) return cached;
+
+  const promise = loader
+    .loadAsync(`/models/items/${file}`)
+    .then((gltf) => {
+      gltf.scene.traverse((node) => {
+        if (node instanceof THREE.Mesh) {
+          node.castShadow = true;
+          node.receiveShadow = true;
+        }
+      });
+      return gltf.scene;
+    })
+    .catch((error) => {
+      // нет файла — остаётся самодельная фигурка, игра идёт дальше
+      console.info('[предметы] модель не загрузилась:', file, error);
+      return null;
+    });
+
+  cache.set(file, promise);
+  return promise;
+}
+
+/** Подменить фигурку моделью, когда она приедет. Группа уже стоит в сцене. */
+function swapIn(group: THREE.Group, entry: ItemModel): void {
+  void loadModel(entry.file).then((scene) => {
+    if (!scene) return;
+    const model = scene.clone(true);
+    model.scale.setScalar(entry.scale ?? 1);
+    if (entry.offset) model.position.set(entry.offset[0], entry.offset[1], entry.offset[2]);
+    group.clear();
+    group.add(model);
+    console.info('[предметы] модель встала:', entry.file);
+  });
+}
+
+/** Простая фигура под конкретный предмет: заглушка до загрузки модели. */
+function createPlaceholder(id: string): THREE.Object3D | null {
   const group = new THREE.Group();
 
   switch (id) {
@@ -96,12 +175,34 @@ export function createPropMesh(id: string): THREE.Object3D | null {
       return null;
   }
 
+  return group;
+}
+
+/** Файл модели для id: нужен руке от первого лица. */
+export function itemModelFile(id: string): string | null {
+  return ITEMS[id]?.file ?? null;
+}
+
+/** Загрузка модели предмета (кэш общий с предметами в мире). */
+export { loadModel as loadItemModel };
+
+/** Предмет в мир: группа с заглушкой, которую заменит модель из predmets/. */
+export function createPropMesh(id: string): THREE.Object3D | null {
+  const entry = ITEMS[id];
+  const placeholder = createPlaceholder(id);
+  if (!entry && !placeholder) return null;
+
+  const group = new THREE.Group();
   group.name = `prop_${id}`;
+  if (placeholder) group.add(placeholder);
+  if (entry) swapIn(group, entry);
+
   group.traverse((node) => {
     if (node instanceof THREE.Mesh) {
       node.castShadow = true;
       node.receiveShadow = true;
     }
   });
+
   return group;
 }

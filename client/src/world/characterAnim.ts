@@ -146,9 +146,13 @@ export class CharacterIdle {
   private wasInScene = false;
   /** Голова выше полуметра над точкой опоры: лежачим шею не крутим. */
   private readonly upright: boolean;
-  /** Центр головы относительно кости (в системе модели): у сидящих моделей
-   *  он на 0.39–0.48 м позади кости, и без поправки голова не поворачивается,
-   *  а уезжает в сторону. */
+  /** Сидячие модели: голова у них висит не на кости — поворот отключён целиком,
+   *  остаётся только дыхание. Так решил оператор после трёх попыток починить. */
+  private readonly headLocked: boolean = false;
+  /** Стык шеи и головы относительно кости. Вращать надо вокруг него, а не
+   *  вокруг центра головы: у стоящих кость и так на шее (смещение 0), а у
+   *  сидящих она на 0.39–0.48 м позади головы, и без поправки голова
+   *  улетает в сторону при первом же повороте. */
   private readonly headShift: THREE.Vector3 | null = null;
   private readonly headBasePos = new THREE.Vector3();
   /** Куда смотрит лицо при нулевом повороте: у сидящих моделей это −Z. */
@@ -185,10 +189,12 @@ export class CharacterIdle {
     // к head. У стоящих моделей смещение нулевое, у сидящих — почти полметра.
     const shift = this.measureHeadShift();
     if (shift) {
-      this.headShift = shift;
+      // Точка вращения — стык шеи и головы: по высоте он там же, где кость,
+      // а по глубине — там, где на самом деле висит голова.
+      this.headShift = new THREE.Vector3(0, 0, shift.z);
       this.headBasePos.copy(this.head!.position);
-      // голова висит позади кости — лицо у таких моделей смотрит в −Z
-      if (shift.z < -0.25) this.facing = Math.PI;
+      // голова висит позади кости: у сидящих моделей поворот отключаем совсем
+      if (shift.z < -0.2) this.headLocked = true;
     }
 
     const unit = ((seed % 1) + 1) % 1;
@@ -228,7 +234,7 @@ export class CharacterIdle {
 
     // цель перевыбираем несколько раз в секунду, а угол считаем каждый кадр:
     // идущий человек должен оставаться в фокусе без рывков
-    if (this.upright) {
+    if (this.upright && !this.headLocked) {
       this.think -= dt;
       if (this.think <= 0) {
         this.choose();
@@ -464,7 +470,7 @@ export class CharacterIdle {
     // иначе шея складывается с корпусом и предел 54° превращается в 65°
     const spineYaw = clamp(this.yaw * SPINE_SHARE, -SPINE_LIMIT, SPINE_LIMIT);
 
-    if (this.head && this.upright) {
+    if (this.head && this.upright && !this.headLocked) {
       // микротремор: даже замерев на цели, человек не превращается в манекен
       const tremor = Math.sin(this.time * 1.9 + this.phase) * 0.008;
       this.head.rotation.y = this.baseHeadY + this.yaw - spineYaw + tremor;
@@ -472,12 +478,15 @@ export class CharacterIdle {
         this.baseHeadX - this.pitch + Math.sin(this.time * 1.1 + this.phase * 2) * 0.005;
       this.head.rotation.z = this.baseHeadZ + this.yaw * 0.07;
 
-      // у сидящих моделей кость головы на 0.4 м позади самой головы: без этой
-      // поправки поворот уводит голову с плеч. Считаем сдвиг центр→поворот→центр.
+      // Вращаем вокруг стыка шеи, а не вокруг кости: кость у сидящих моделей
+      // на 0.4 м позади головы. Поправка = p − R·p, где p — стык шеи в системе
+      // кости. У стоящих моделей p ≈ 0, поэтому для них ничего не меняется.
       if (this.headShift) {
         this.tmpQuat.setFromEuler(this.head.rotation);
         this.tmpA.copy(this.headShift).applyQuaternion(this.tmpQuat);
-        this.head.position.copy(this.headBasePos).add(this.tmpB.copy(this.headShift).sub(this.tmpA));
+        this.head.position
+          .copy(this.headBasePos)
+          .add(this.tmpB.copy(this.headShift).sub(this.tmpA));
       }
     }
 
