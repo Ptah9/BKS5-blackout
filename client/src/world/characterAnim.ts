@@ -206,11 +206,6 @@ export class CharacterIdle {
       // куда и тело.
       if (shift.z < -0.2) {
         this.headLocked = true;
-        // голова этих моделей висит на 0.4 м позади кости — в кадре это
-        // «лицо отдельно от тела». Двигаем кость вперёд, чтобы голова
-        // села на плечи; поворот при этом уже выключен.
-        this.head!.position.z -= shift.z;
-        this.headBasePos.copy(this.head!.position);
       }
     }
 
