@@ -125,6 +125,12 @@ export class Net {
     }));
   }
 
+  /** Персона агента из панели: отдельное сообщение, текст до 2000 символов. */
+  adminPersona(id: string, text: string, code?: string): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: MSG.ADMIN_PERSONA, id, text, code: code ?? '' }));
+  }
+
   /** Объявление в микрофон: сервер оценит слова по ключевым. */
   announce(text: string): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;

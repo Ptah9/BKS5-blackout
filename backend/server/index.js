@@ -35,7 +35,7 @@ const DEV = process.argv.includes('--dev');
 const DEV_PORT = 8090;
 const PORT = DEV ? DEV_PORT : 8443;
 /** Код админки из окружения: пусто — панель только для чтения. */
-const ADMIN_CODE = String(process.env.ADMIN_CODE ?? '');
+
 
 const log = (...args) => console.log(`[${new Date().toLocaleTimeString('ru-RU')}]`, ...args);
 
@@ -58,6 +58,9 @@ function loadDotEnv(file) {
 }
 
 loadDotEnv(join(ROOT, '.env'));
+
+// читаем после .env: иначе переменная всегда пустая и панель только читает
+const ADMIN_CODE = String(process.env.ADMIN_CODE ?? '');
 
 /* ───────────────────────────── база ───────────────────────────── */
 
@@ -286,9 +289,11 @@ function startRadio({ text }) {
   };
 
   radioTimers.push(setInterval(tick, interval));
+  log(`радио: таймер создан на ${interval} мс, в очереди ${radioTimers.length}`);
 }
 
 function stopRadio() {
+  if (radioTimers.length > 0) log(`радио: stopRadio, снимаю ${radioTimers.length} таймер(ов)`);
   while (radioTimers.length > 0) clearTimeout(radioTimers.pop());
 }
 
@@ -1192,6 +1197,32 @@ function attachWebSocket(server) {
         }
 
         // ручки панели: значения проверяются здесь, клиенту не верим
+        // персона агента из панели: { id, text, code }; пустой text — сброс на файл
+        case MSG.ADMIN_PERSONA: {
+          if (!client) return;
+          if (!ADMIN_CODE || String(msg.code ?? '') !== ADMIN_CODE) {
+            ws.send(JSON.stringify({
+              t: MSG.EVENT,
+              kind: 'say',
+              data: { text: 'Панель только для чтения: нужен код администратора.' },
+            }));
+            return;
+          }
+          const npc = npcs.find((item) => item.id === String(msg.id ?? ''));
+          if (!npc) return;
+          const personaText = String(msg.text ?? '').trim().slice(0, 2000);
+          if (personaText) {
+            store.setPersona(npc.id, personaText);
+            log(`персона ${npc.id}: обновлена, ${personaText.length} символов`);
+          } else {
+            store.resetPersona(npc.id);
+            log(`персона ${npc.id}: сброшена к файлу`);
+          }
+          // панель должна увидеть новое состояние сразу, а не через секунду
+          ws.send(JSON.stringify({ t: MSG.ADMIN_STATE, data: adminState() }));
+          return;
+        }
+
         case MSG.ADMIN_SET: {
           if (!client) return;
 
@@ -1351,6 +1382,16 @@ function adminState() {
     stats: { panic: stats.panic, trust: stats.trust, air: stats.air },
     lights: scenario.state.lights,
     npcs: npcs.map((npc) => ({ id: npc.id, name: npc.name })),
+    // персоны для редактора в панели: своя из базы или исходная из файла
+    personas: npcs.map((npc) => {
+      const override = store.getPersona(npc.id);
+      return {
+        id: npc.id,
+        name: npc.name,
+        text: override ?? npc.persona,
+        custom: override !== null,
+      };
+    }),
     // все известные флаги, а не только поднятые: по ним и кликают в панели
     flags: [...KNOWN_FLAGS]
       .sort()

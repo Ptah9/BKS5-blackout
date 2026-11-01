@@ -120,7 +120,11 @@ export class AdminPanel {
       // набранный текст персоны держим отдельно: снапшот с сервера его не затрёт
       if (kind === 'persona') {
         const npcId = input.dataset.npc ?? '';
-        if (npcId) this.drafts.set(npcId, input.value);
+        if (!npcId) return;
+        this.drafts.set(npcId, input.value);
+        // счётчик символов обновляем на месте: перерисовка выбила бы курсор
+        const counter = this.root.querySelector(`span[data-counter="${npcId}"]`);
+        if (counter) counter.textContent = `${input.value.length} / ${PERSONA_MAX}`;
         return;
       }
       if (kind !== 'panic' && kind !== 'trust') return;
@@ -279,7 +283,7 @@ export class AdminPanel {
               style="background:#1d2733;color:#c9d6e6;border:1px solid #3a4a5e;font:11px Consolas,monospace">сохранить</button>
             <button data-admin="persona-reset" data-npc="${escape(agent.id)}" ${locked ? 'disabled' : ''}
               style="background:#1d2733;color:#6f8096;border:1px solid #3a4a5e;font:11px Consolas,monospace">сбросить</button>
-            <span style="color:#6f8096">${agent.text.length} / ${PERSONA_MAX}</span>
+            <span data-counter="${escape(agent.id)}" style="color:#6f8096">${agent.text.length} / ${PERSONA_MAX}</span>
           </div>
         </li>`,
           )

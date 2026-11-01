@@ -589,7 +589,10 @@ async function main(): Promise<void> {
   const inventory = new Inventory();
   const hud = new Hud(inventory);
   // панель администратора: оверлей, живёт отдельно от HUD; ручки идут в net
-  const admin = new AdminPanel((kind, value, flag, code, npc, text) => net.adminSet(kind, value, flag, code, npc, text));
+  const admin = new AdminPanel(
+    (kind, value, flag, code, npc, text) => net.adminSet(kind, value, flag, code, npc, text),
+    (id, text, code) => net.adminPersona(id, text, code),
+  );
   const pulse = new Pulse();
   // звук: блипы в духе Undertale, по одному на символ реплики
   const voices = new Voices();
