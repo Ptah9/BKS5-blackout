@@ -1,9 +1,24 @@
 {
   "id": "metro_tunnel",
   "beats": [
-    { "at": 0.5, "do": "cutscene", "id": "intro_blackout" },
-    { "at": 7.0, "do": "stat", "key": "panic", "delta": 8 },
-    { "at": 7.4, "do": "thought", "id": "dark", "text": "Слишком темно. С этим надо что-то делать.", "until": "has_light" }
+    {
+      "at": 0.5,
+      "do": "cutscene",
+      "id": "intro_blackout"
+    },
+    {
+      "at": 7,
+      "do": "stat",
+      "key": "panic",
+      "delta": 8
+    },
+    {
+      "at": 7.4,
+      "do": "thought",
+      "id": "dark",
+      "text": "Слишком темно. С этим надо что-то делать.",
+      "until": "has_light"
+    }
   ],
   "triggers": [
     {
@@ -46,6 +61,76 @@
       "id": "cab_empty",
       "text": "Кабина пуста. Дверь наружу распахнута, и из неё тянет холодом.",
       "until": "cab_papered"
+    },
+    {
+      "on": "flag",
+      "flag": "people_ordered",
+      "once": true,
+      "do": "objective",
+      "text": "Провести людей через кабину и вернуться за остальными"
+    },
+    {
+      "on": "flag",
+      "flag": "people_crowd",
+      "once": true,
+      "do": "say",
+      "text": "Давка в проёме. Обходчик впервые повышает голос."
+    },
+    {
+      "on": "flag",
+      "flag": "ded_helped",
+      "once": true,
+      "do": "say",
+      "text": "Дед катит велосипед рядом и уже не ворчит."
+    },
+    {
+      "on": "flag",
+      "flag": "ded_robbed",
+      "once": true,
+      "do": "say",
+      "text": "Дед молчит. В тоннеле он пойдёт за тем, кто говорит уверенно."
+    },
+    {
+      "on": "flag",
+      "flag": "red_shirt",
+      "once": true,
+      "do": "say",
+      "text": "Свет стал мягким: глаза привыкли, паника спала."
+    },
+    {
+      "on": "flag",
+      "flag": "baba_saved",
+      "once": true,
+      "do": "say",
+      "text": "Бабка сидит и дышит. Полвагона выдохнуло вместе с ней."
+    },
+    {
+      "on": "flag",
+      "flag": "girl_calmed",
+      "once": true,
+      "do": "say",
+      "text": "Девочка держит конфету в кулаке и больше не дрожит."
+    },
+    {
+      "on": "flag",
+      "flag": "rail_safe",
+      "once": true,
+      "do": "objective",
+      "text": "Вывести всех по цепочке на выход"
+    },
+    {
+      "on": "flag",
+      "flag": "people_returned",
+      "once": true,
+      "do": "say",
+      "text": "Голос по громкой связи разворачивает ушедших обратно."
+    },
+    {
+      "on": "flag",
+      "flag": "chain_ready",
+      "once": true,
+      "do": "objective",
+      "text": "Цепочка пошла: впереди ты, за тобой дети, старики, остальные"
     }
   ]
 }

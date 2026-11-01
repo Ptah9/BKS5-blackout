@@ -816,6 +816,28 @@ function attachWebSocket(server) {
 
             // запись выключили — она больше не играет
             if (verb.flag === 'announcer_off') stopRadio();
+
+            // цепочка пошла — смотрим, чем кончилась ночь
+            if (verb.flag === 'chain_ready') {
+              const ending =
+                store.getFlag('ded_robbed') === '1'
+                  ? {
+                      id: 'ending_ded',
+                      text: 'Дед сплёвывает на рельсы, вскакивает на велосипед и уезжает в тоннель один: «Бездари! Никакой дисциплины!»',
+                    }
+                  : store.getFlag('people_returned') === '1' && store.getFlag('baba_saved') === '1'
+                    ? {
+                        id: 'ending_best',
+                        text: 'Ты выходишь на платформу первым и оборачиваешься, чтобы подать руку следующему. За спиной один за другим поднимаются люди.',
+                      }
+                    : {
+                        id: 'ending_driver',
+                        text: 'Темнота, и в ней мигает фонарь: на банкетке остались двое. — Помощь придёт? — Придёт. Жди.',
+                      };
+
+              log(`финал: ${ending.id}`);
+              broadcast({ kind: 'ending', data: ending });
+            }
           }
 
           // предмет из мира: если в рюкзаке есть место, вещь уходит в слот
@@ -851,6 +873,8 @@ function attachWebSocket(server) {
           if (verb.air) changeStat('air', Number(verb.air));
           // тубус бьёт по нервам, конфеты наоборот
           if (verb.panic) changeStat('panic', Number(verb.panic));
+          // поступок меняет доверие толпы: помог деду — плюс, отнял — минус
+          if (verb.trust) changeStat('trust', Number(verb.trust));
 
           // у верба может быть своя мини-сцена — проигрываем её всем
           if (verb.cutscene) {

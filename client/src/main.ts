@@ -680,6 +680,11 @@ async function main(): Promise<void> {
           if (worldFlags.has('cab_open')) cabOpen = true;
           return;
         }
+        case 'ending':
+          // финал: большая плашка и тишина вместо задач
+          hud.say(String(data.text ?? ''), 25);
+          setObjective('Финал');
+          return;
         case 'say':
           hud.say(String(data.text ?? ''), 6);
           return;
