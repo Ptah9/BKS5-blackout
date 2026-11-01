@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>Риг моделей — проверка</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #14161a; font: 13px system-ui, sans-serif; color: #cfd3da; }
+      canvas { display: block; }
+      #panel { position: fixed; left: 12px; top: 12px; background: #1c1f26cc; padding: 10px 12px; border-radius: 8px; width: 250px; }
+      #panel label { display: flex; justify-content: space-between; margin: 6px 0; gap: 8px; }
+      #panel input[type=range] { width: 120px; }
+      #panel h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #8b93a1; }
+      #status { position: fixed; right: 12px; top: 12px; background: #1c1f26cc; padding: 8px 10px; border-radius: 8px; max-width: 320px; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 11px; }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/node_modules/three/build/three.module.js",
+          "three/addons/": "/node_modules/three/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="panel">
+      <h3>Проверка рига</h3>
+      <label>бедро <input id="hip" type="range" min="-50" max="50" value="0" /></label>
+      <label>колено <input id="knee" type="range" min="0" max="90" value="0" /></label>
+      <label>плечо <input id="arm" type="range" min="-60" max="90" value="0" /></label>
+      <label>локоть <input id="elbow" type="range" min="0" max="100" value="0" /></label>
+      <label>голова <input id="head" type="range" min="-40" max="40" value="0" /></label>
+      <label>скелет <input id="bones" type="checkbox" /></label>
+    </div>
+    <div id="status">загрузка…</div>
+    <script type="module">
+      import * as THREE from 'three';
+      import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+      const MODELS = [
+        'npc_stand.glb',
+        'altyshka.glb',
+        'maksim.glb',
+        'teacher.glb',
+        'rabochii.glb',
+        'vladimir.glb',
+        'obhodchik.glb',
+        'ganvest.glb',
+        'mashinist.glb',
+        'svyazi_def.glb',
+        'npc_sit.glb',
+        'babka.glb',
+        'devochka.glb',
+        'dima_red_t-shirt.glb',
+      ];
+
+      const status = document.getElementById('status');
+      const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+      renderer.setSize(innerWidth, innerHeight);
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+      document.body.appendChild(renderer.domElement);
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x14161a);
+      const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 200);
+      camera.position.set(0, 2.1, 11);
+      camera.lookAt(0, 1.0, 0);
+
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x334, 2.2));
+      const sun = new THREE.DirectionalLight(0xffffff, 2.4);
+      sun.position.set(3, 6, 5);
+      scene.add(sun);
+      const grid = new THREE.GridHelper(40, 40, 0x2a2f38, 0x232830);
+      scene.add(grid);
+
+      const loader = new GLTFLoader();
+      const rigged = [];
+      const failed = [];
+
+      const glbs = await Promise.allSettled(
+        MODELS.map((name) =>
+          loader
+            .loadAsync(`/client/public/models/${name}`)
+            .then((gltf) => ({ name, gltf })),
+        ),
+      );
+
+      let x = 0;
+      for (const entry of glbs) {
+        if (entry.status === 'rejected') {
+          failed.push(String(entry.reason?.message ?? entry.reason));
+          continue;
+        }
+        const { name, gltf } = entry.value;
+        const root = gltf.scene;
+        const box = new THREE.Box3().setFromObject(root);
+        const size = box.getSize(new THREE.Vector3());
+        root.position.set(x, 0, 0);
+        x += Math.max(size.x, 0.7) + 0.45;
+
+        const mesh = root.getObjectByProperty('type', 'SkinnedMesh');
+        let bones = {};
+        if (mesh) {
+          for (const bone of mesh.skeleton.bones) bones[bone.name] = bone;
+        } else {
+          failed.push(`${name}: нет SkinnedMesh`);
+        }
+        scene.add(root);
+        rigged.push({ name, root, bones, mesh });
+      }
+
+      // отладка скелета поверх моделей
+      const helpers = [];
+      function rebuildHelpers() {
+        for (const helper of helpers) scene.remove(helper);
+        helpers.length = 0;
+        if (!document.getElementById('bones').checked) return;
+        for (const item of rigged) {
+          if (!item.mesh) continue;
+          const helper = new THREE.SkeletonHelper(item.root);
+          helpers.push(helper);
+          scene.add(helper);
+        }
+      }
+      document.getElementById('bones').addEventListener('change', rebuildHelpers);
+
+      function apply() {
+        const hip = THREE.MathUtils.degToRad(+document.getElementById('hip').value);
+        const knee = THREE.MathUtils.degToRad(+document.getElementById('knee').value);
+        const arm = THREE.MathUtils.degToRad(+document.getElementById('arm').value);
+        const elbow = THREE.MathUtils.degToRad(+document.getElementById('elbow').value);
+        const head = THREE.MathUtils.degToRad(+document.getElementById('head').value);
+        for (const item of rigged) {
+          const set = (name, rx, ry = 0) => {
+            const bone = item.bones[name];
+            if (bone) bone.rotation.set(rx, ry, 0);
+          };
+          // шаг: ноги и руки в противофазе, колено сгибается назад (+X),
+          // локоть — вперёд (−X): так это выглядит у человека
+          set('thighL', -hip);
+          set('thighR', hip);
+          set('kneeL', knee);
+          set('kneeR', knee);
+          set('shoulderL', arm);
+          set('shoulderR', -arm);
+          set('elbowL', -elbow);
+          set('elbowR', -elbow);
+          set('head', head * 0.4, head);
+          if (item.bones.spine) item.bones.spine.rotation.set(0, head * 0.3, 0);
+        }
+      }
+      for (const id of ['hip', 'knee', 'arm', 'elbow', 'head']) {
+        document.getElementById(id).addEventListener('input', apply);
+      }
+
+      status.textContent =
+        `загружено ${rigged.length} из ${MODELS.length}` +
+        (failed.length ? `\nошибки:\n${failed.join('\n')}` : '\nвсе скины прочитаны');
+
+      // для проверки извне: поставить позу и снять картинку
+      globalThis.viewer = {
+        renderer,
+        camera,
+        scene,
+        rigged,
+        setPose(values) {
+          for (const id of ['hip', 'knee', 'arm', 'elbow', 'head']) {
+            if (values[id] !== undefined) document.getElementById(id).value = values[id];
+          }
+          apply();
+        },
+        frame(fromX = 0, toX = 99) {
+          const items = rigged.filter((item) => item.root.position.x >= fromX && item.root.position.x <= toX);
+          const box = new THREE.Box3();
+          for (const item of items) box.expandByObject(item.root);
+          const center = box.getCenter(new THREE.Vector3());
+          const size = box.getSize(new THREE.Vector3());
+          camera.position.set(center.x, center.y + size.y * 0.15, Math.max(3, size.x * 0.9));
+          camera.lookAt(center.x, center.y * 0.95, 0);
+          renderer.render(scene, camera);
+        },
+        snapshot() {
+          renderer.render(scene, camera);
+          return renderer.domElement.toDataURL('image/png');
+        },
+      };
+
+      const clock = new THREE.Clock();
+      apply();
+      renderer.setAnimationLoop(() => {
+        const t = clock.getElapsedTime();
+        for (const item of rigged) {
+          if (item.bones.spine) item.bones.spine.position.y += 0;
+        }
+        renderer.render(scene, camera);
+      });
+
+      addEventListener('resize', () => {
+        camera.aspect = innerWidth / innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(innerWidth, innerHeight);
+      });
+    </script>
+  </body>
+</html>
