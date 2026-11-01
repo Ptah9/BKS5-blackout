@@ -360,6 +360,45 @@ const ANNOUNCE_TOPICS = [
 /** Темы, уже засчитанные в этом мире: спам одними и теми же словами не катит. */
 const announceUsed = new Set();
 
+/**
+ * Новый набор: снять флаги, вернуть стартовые статы, стереть позиции и
+ * инвентарь всех игроков, перезапустить сценарий. Клиенты по событию
+ * world_reset перезагружают страницу и входят в лобби уже с чистого листа.
+ */
+function resetWorld() {
+  stopRadio();
+  scenario.reset();
+  clearNotes();
+
+  // store.db — публичное поле Store; отдельные методы не заводим, чтобы
+  // не трогать чужой файл store.js
+  store.db.exec('DELETE FROM world_flags');
+  store.db.exec('DELETE FROM state');
+  stats.panic = 20;
+  stats.trust = 50;
+  stats.air = 100;
+  store.setFlag('panic', 20);
+  store.setFlag('trust', 50);
+  store.setFlag('air', 100);
+  announceUsed.clear();
+
+  // подключённым сразу возвращаем стартовый инвентарь и точку появления,
+  // иначе секундная запись в базу вернёт им старое состояние после перезагрузки
+  for (const item of clients.values()) {
+    item.inventory = [...START_INVENTORY];
+    item.x = WORLD.spawnX;
+    item.z = WORLD.spawnZ;
+    item.yaw = 0;
+    item.dead = false;
+    store.saveState(item.playerId, item.x, item.z, item.yaw, item.inventory);
+  }
+
+  broadcast({ kind: 'stats', data: { panic: stats.panic, trust: stats.trust, air: stats.air } });
+  broadcast({ kind: 'world_reset', data: {} });
+  broadcastLobby();
+  log('мир сброшен: флаги, статы, позиции и инвентарь — как в начале');
+}
+
 /** Агент виден, если у него нет spawnFlag или флаг в базе уже стоит. */
 function npcVisible(npc) {
   return !npc.spawnFlag || store.getFlag(npc.spawnFlag) === '1';
@@ -985,6 +1024,12 @@ function attachWebSocket(server) {
               broadcast({ kind: 'ending', data: ending });
               store.clearNpcMemory();
               log('память диалогов NPC очищена');
+
+              // финал прочитан — через четверть минуты возвращаем всех в лобби,
+              // а мир начинаем с чистого листа
+              setTimeout(() => {
+                if (scenario.running) resetWorld();
+              }, 15000);
             }
           }
 
@@ -1131,22 +1176,17 @@ function attachWebSocket(server) {
         // иначе игрок сразу умрёт снова на том же пороге
         case MSG.RESTART: {
           if (!client) return;
-          // оживлять можно только мёртвого, иначе это обход гейта акта
+          // кнопка есть только на экране смерти; живой её не шлёт
           if (!client.dead) return;
 
-          client.dead = false;
-
-          // мировые статы не трогаем, если в мире есть другие игроки
-          if (clients.size <= 1) {
-            stats.panic = 20;
-            stats.trust = 50;
-            store.setFlag('panic', 20);
-            store.setFlag('trust', 50);
-            broadcast({ kind: 'stats', data: { panic: stats.panic, trust: stats.trust, air: stats.air } });
+          // новый набор для всех: если в игре ещё кто-то есть, сначала
+          // предупреждаем в ленте и даём три секунды прочитать
+          if (clients.size > 1) {
+            broadcast({ kind: 'say', data: { text: 'Мир начинается заново.' } });
+            setTimeout(resetWorld, 3000);
+          } else {
+            resetWorld();
           }
-
-          ws.send(JSON.stringify({ t: MSG.EVENT, kind: 'revive', data: {} }));
-          log(`игрок ${client.name}: начал заново`);
           return;
         }
 
@@ -1299,17 +1339,12 @@ function attachWebSocket(server) {
       store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
       log(`ws: игрок ${client.name} (#${client.playerId}) вышел, код ${code}, ${clients.size} в сети`);
 
-      // все ушли — сценарий и состояние толпы начинаются заново
+      // все ушли — следующий заход начинается с чистого листа: флаги, статы,
+      // позиции, инвентарь и сценарий
       if (clients.size === 0) {
-        scenario.reset();
-        stopRadio();
         clearNotes();
-        stats.panic = 20;
-        stats.trust = 50;
-        stats.air = 100;
-        store.setFlag('panic', 20);
-        store.setFlag('trust', 50);
-        store.setFlag('air', 100);
+        resetWorld();
+        return;
       }
 
       broadcastLobby();
@@ -1505,7 +1540,8 @@ setInterval(() => {
   if (store.getFlag('cab_light') !== '1') {
     // погасили вручную (панель, сценарий) — дедлайн не должен остаться в базе,
     // иначе следующее включение сразу истечёт
-    if (store.getFlag('cab_light_until') !== '0') store.setFlag('cab_light_until', '0');
+    const storedUntil = store.getFlag('cab_light_until');
+    if (storedUntil !== null && storedUntil !== '0') store.setFlag('cab_light_until', '0');
     cabLightSent = -1;
     return;
   }

@@ -957,6 +957,12 @@ async function main(): Promise<void> {
           applyNpcs(list);
           return;
         }
+        case 'world_reset': {
+          // новый набор: перезагружаемся, чтобы заново взять сцену и предметы,
+          // и попадаем в лобби уже с чистого листа
+          window.setTimeout(() => location.reload(), 800);
+          return;
+        }
         case 'death': {
           // личная смерть: ввод заблокирован, мир живёт дальше
           dead = true;
