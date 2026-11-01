@@ -104,10 +104,25 @@ export class Net {
     this.ws.send(JSON.stringify({ t: MSG.ADMIN }));
   }
 
-  /** Ручка панели: паника/доверие (0–100), свет (0–1), флаг (value 1/0). */
-  adminSet(kind: 'panic' | 'trust' | 'lights' | 'flag', value: number, flag?: string): void {
+  /** Ручка панели: паника/доверие (0–100), свет (0–1), флаг, персона. */
+  adminSet(
+    kind: string,
+    value: number,
+    flag?: string,
+    code?: string,
+    npc?: string,
+    text?: string,
+  ): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify({ t: MSG.ADMIN_SET, kind, value, flag: flag ?? null }));
+    this.ws.send(JSON.stringify({
+      t: MSG.ADMIN_SET,
+      kind,
+      value,
+      flag: flag ?? null,
+      code: code ?? '',
+      npc: npc ?? null,
+      text: text ?? null,
+    }));
   }
 
   /** Объявление в микрофон: сервер оценит слова по ключевым. */

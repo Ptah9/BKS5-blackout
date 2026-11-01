@@ -133,8 +133,14 @@ export class AgentRuntime {
     const history = this.store.recentMemory(npc.id, playerId, MEMORY_LIMIT);
     this.store.addMemory(npc.id, playerId, 'user', text);
 
+    // персона из панели главнее файла: правка живёт в базе, переживает рестарт
+    // и подхватывается со следующей реплики — перезапускать сервер не надо
+    const override = this.store.getPersona(npc.id);
+    const persona = override ?? npc.persona;
+    const actor = override ? { ...npc, persona, personaOverride: true } : npc;
+
     const messages = [
-      { role: 'system', content: `${SYSTEM_RULES}\n\n${npc.persona}` },
+      { role: 'system', content: `${SYSTEM_RULES}\n\n${persona}` },
       ...history.map((row) => ({
         role: row.role === 'assistant' ? 'assistant' : 'user',
         content: row.text,
@@ -145,7 +151,7 @@ export class AgentRuntime {
     let raw = '';
 
     try {
-      raw = await this.askBrain(messages, signal);
+      raw = await this.askBrain(messages, signal, actor, text);
     } catch (error) {
       if (error?.name === 'AbortError') throw error;
       this.log('агент: модель не ответила, переключаюсь —', error?.message ?? error);
@@ -159,7 +165,7 @@ export class AgentRuntime {
       }
     }
 
-    const answer = raw.trim() ? parseAgentAnswer(raw) : parseAgentAnswer(this.rulesAnswer(npc, text));
+    const answer = raw.trim() ? parseAgentAnswer(raw) : parseAgentAnswer(this.rulesAnswer(actor, text));
 
     if (onResult) onResult(answer);
     this.store.addMemory(npc.id, playerId, 'assistant', answer.speech);
@@ -171,8 +177,12 @@ export class AgentRuntime {
     }
   }
 
-  /** Один вызов активного мозга: собирает текст целиком. */
-  async askBrain(messages, signal) {
+  /**
+   * Один вызов активного мозга: собирает текст целиком.
+   * Когда мозга нет, отвечают правила — им нужен сам агент и вопрос игрока,
+   * иначе правка персоны в офлайне не была бы видна в ответе.
+   */
+  async askBrain(messages, signal, npc = null, text = '') {
     if (this.localUrl) {
       const stream = this.localFormat === 'openai'
         ? this.streamOpenAI(messages, signal)
@@ -180,7 +190,7 @@ export class AgentRuntime {
       return this.collect(stream);
     }
     if (this.key) return this.collect(this.streamDeepSeek(messages, signal));
-    return this.rulesAnswer(null, null);
+    return this.rulesAnswer(npc, text);
   }
 
   async collect(stream) {
@@ -391,6 +401,13 @@ export class AgentRuntime {
         'Спроси иначе — я не понял.',
         'Тут темно, а ты спрашиваешь. Давай по делу.',
       ], said);
+    }
+
+    // без модели правку персоны иначе не увидеть: берём первую фразу новой
+    // персоны как зачин, чтобы ответ менялся и в офлайн-режиме
+    if (npc?.personaOverride) {
+      const lead = String(npc.persona ?? '').split(/[.!?\n]/)[0].trim().slice(0, 120);
+      if (lead) speech = `${lead}. ${speech}`;
     }
 
     const calm = npc?.id === 'inspector';

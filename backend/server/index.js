@@ -34,6 +34,8 @@ const DEV = process.argv.includes('--dev');
 // 8080 на этой машине занят отладочным сервером браузера, поэтому dev — на 8090
 const DEV_PORT = 8090;
 const PORT = DEV ? DEV_PORT : 8443;
+/** Код админки из окружения: пусто — панель только для чтения. */
+const ADMIN_CODE = String(process.env.ADMIN_CODE ?? '');
 
 const log = (...args) => console.log(`[${new Date().toLocaleTimeString('ru-RU')}]`, ...args);
 
@@ -231,15 +233,18 @@ function startRadio({ text }) {
   stopRadio();
   const interval = 5400;
   let repeat = 0;
+  log('радио: запись пошла');
 
   const tick = () => {
     // выключили тангенту — запись замолкает навсегда
     if (store.getFlag('announcer_off') === '1') {
+      log('радио: тангенту выключили, запись встала');
       stopRadio();
       return;
     }
 
     repeat++;
+    log(`радио: повтор ${repeat}`);
 
     // сама реплика — мгновенная: она звучит и затихает.
     // Звук едет вместе с текстом: клиент не повторяет таймер, а играет
@@ -337,24 +342,35 @@ const KNOWN_FLAGS = new Set([
   ...(scenario.definition?.triggers ?? []).map((trigger) => trigger.flag).filter(Boolean),
 ]);
 
-/** Ключевые слова объявления: без модели, на демо интернета нет. */
+/** Ключевые слова объявления: без модели, на демо интернета нет.
+ *  Слова — основы: сравнение по началу слова, поэтому падежи и окончания не мешают. */
 const ANNOUNCE_TOPICS = [
-  { id: 'rail', words: ['рельс', 'ток', 'напряжен', 'контактн'] },
-  { id: 'driver', words: ['машинист', 'ушел', 'кабин'] },
-  { id: 'phones', words: ['авиарежим', 'энергосбереж', 'экран'] },
-  { id: 'quiet', words: ['тихо', 'помолчите', 'слушайте', 'тишин'] },
+  { id: 'rail', words: ['рельс', 'ток', 'напряжен', 'контактн', 'электрич', 'убьет', 'заземл'] },
+  { id: 'exit', words: ['выход', 'пут', 'опасн', 'не выходите'] },
+  { id: 'driver', words: ['машинист', 'водител', 'ушел', 'ушед', 'кабин'] },
+  { id: 'quiet', words: ['тихо', 'тишин', 'молч', 'успоко', 'слушай', 'помолч'] },
+  { id: 'phones', words: ['экран', 'телефон', 'авиарежим', 'энергосбереж'] },
 ];
 
-/** Акт 1 закрыт: бумажка на двери, запись выключена, объявление сказано
- *  и цель мини-игры достигнута — паника ≤ 30, доверие ≥ 80. */
+/** Темы, уже засчитанные в этом мире: спам одними и теми же словами не катит. */
+const announceUsed = new Set();
+
+/** Один гейт для клиента и сервера: акт 1 закрыт навсегда, когда цель взята. */
 function actOneReady() {
-  return (
-    store.getFlag('cab_papered') === '1'
-    && store.getFlag('announcer_off') === '1'
-    && store.getFlag('crowd_calmed') === '1'
-    && stats.panic <= 30
-    && stats.trust >= 80
-  );
+  return store.getFlag('act1_done') === '1';
+}
+
+/** Если флаги и мини-игра закрыты — ставим act1_done один раз и рассылаем всем. */
+function checkAct1Done() {
+  if (store.getFlag('act1_done') === '1') return;
+  if (store.getFlag('cab_papered') !== '1') return;
+  if (store.getFlag('announcer_off') !== '1') return;
+  if (store.getFlag('crowd_calmed') !== '1') return;
+  if (stats.panic > 30 || stats.trust < 80) return;
+
+  store.setFlag('act1_done', '1');
+  broadcast({ kind: 'flag', data: { flag: 'act1_done', value: true } });
+  log('акт 1 закрыт: выход в тоннель открыт');
 }
 
 /** Паника 100 или доверие 0 — игрок «умирает»: личная смерть, мир продолжается. */
@@ -1002,6 +1018,7 @@ function attachWebSocket(server) {
             verb: verb.id,
             item: String(msg.item ?? '') || null,
           });
+          checkDeath(client);
           return;
         }
 
@@ -1036,36 +1053,38 @@ function attachWebSocket(server) {
           const normalized = text.toLowerCase().replace(/ё/g, 'е');
           const words = normalized.split(/[^a-zа-я0-9]+/).filter(Boolean);
           const hits = ANNOUNCE_TOPICS.filter((topic) =>
-            topic.words.some((word) =>
-              word.length <= 4 ? words.includes(word) : normalized.includes(word),
+            topic.words.some((stem) =>
+              stem.includes(' ')
+                ? normalized.includes(stem)
+                : words.some((word) => word.startsWith(stem)),
             ),
           );
 
           // слова игрока слышит весь вагон
           broadcast({ kind: 'say', data: { text: `${client.name} в микрофон: «${text}»` } });
 
-          // тема, которую игрок поднимает не впервые, действует сильнее:
-          // -6 за тему и ещё -4 за повтор, доверие +5
-          client.announceTopics ??= new Set();
-          for (const topic of hits) {
-            const repeat = client.announceTopics.has(topic.id);
-            client.announceTopics.add(topic.id);
-            changeStat('trust', 5);
-            changeStat('panic', repeat ? -10 : -6);
+          // каждая тема засчитывается один раз за жизнь мира: спамить одним
+          // и тем же нельзя, а осмысленное объявление по всем темам закрывает цель
+          const usedTopics = hits.filter((topic) => !announceUsed.has(topic.id));
+          for (const topic of usedTopics) {
+            announceUsed.add(topic.id);
+            changeStat('trust', 7);
+            changeStat('panic', -10);
           }
 
-          if (hits.length >= 3) {
+          if (usedTopics.length >= 3) {
             store.setFlag('crowd_calmed', '1');
             dropNotesByFlag('crowd_calmed');
             // клиенты должны узнать о флаге: от него зависит дверь в тоннель
             broadcast({ kind: 'flag', data: { flag: 'crowd_calmed', value: true } });
             scenario.fire('flag', { flag: 'crowd_calmed' });
             broadcast({ kind: 'say', data: { text: 'Люди слушают. Гул в вагоне стихает.' } });
-            log(`объявление ${client.name}: попаданий ${hits.length} — толпа успокоена`);
+            log(`объявление ${client.name}: попаданий ${usedTopics.length} — толпа успокоена`);
           } else {
             broadcast({ kind: 'say', data: { text: 'Слова тонут в гуле.' } });
-            log(`объявление ${client.name}: попаданий ${hits.length} — толпа не успокоилась`);
+            log(`объявление ${client.name}: попаданий ${usedTopics.length} — толпа не успокоилась`);
           }
+          checkAct1Done();
           checkDeath(client);
           return;
         }
@@ -1090,12 +1109,20 @@ function attachWebSocket(server) {
         // иначе игрок сразу умрёт снова на том же пороге
         case MSG.RESTART: {
           if (!client) return;
+          // оживлять можно только мёртвого, иначе это обход гейта акта
+          if (!client.dead) return;
+
           client.dead = false;
-          stats.panic = 20;
-          stats.trust = 50;
-          store.setFlag('panic', 20);
-          store.setFlag('trust', 50);
-          broadcast({ kind: 'stats', data: { panic: stats.panic, trust: stats.trust, air: stats.air } });
+
+          // мировые статы не трогаем, если в мире есть другие игроки
+          if (clients.size <= 1) {
+            stats.panic = 20;
+            stats.trust = 50;
+            store.setFlag('panic', 20);
+            store.setFlag('trust', 50);
+            broadcast({ kind: 'stats', data: { panic: stats.panic, trust: stats.trust, air: stats.air } });
+          }
+
           ws.send(JSON.stringify({ t: MSG.EVENT, kind: 'revive', data: {} }));
           log(`игрок ${client.name}: начал заново`);
           return;
@@ -1168,6 +1195,16 @@ function attachWebSocket(server) {
         case MSG.ADMIN_SET: {
           if (!client) return;
 
+          // без кода из окружения панель только для чтения
+          if (!ADMIN_CODE || String(msg.code ?? '') !== ADMIN_CODE) {
+            ws.send(JSON.stringify({
+              t: MSG.EVENT,
+              kind: 'say',
+              data: { text: 'Панель только для чтения: нужен код администратора.' },
+            }));
+            return;
+          }
+
           const kind = String(msg.kind ?? '');
           const value = Number(msg.value);
 
@@ -1175,6 +1212,8 @@ function attachWebSocket(server) {
             if (!Number.isFinite(value)) return;
             const target = Math.max(0, Math.min(100, Math.round(value)));
             changeStat(kind, target - stats[kind]);
+            // ручка панели тоже может довести толпу до предела
+            checkDeath(client);
             return;
           }
 
@@ -1263,6 +1302,8 @@ async function respond(ws, client, npc, text) {
         // числа из ответа агента меняют состояние мира — это его влияние на толпу
         if (answer.trustDelta) changeStat('trust', answer.trustDelta);
         if (answer.panicDelta) changeStat('panic', answer.panicDelta);
+        // ответ модели тоже может добить толпу до сотни
+        checkDeath(client);
         if (answer.actionFlag && answer.actionFlag !== 'none') {
           log(`агент ${npc.id}: ${answer.actionFlag}`);
         }
@@ -1463,6 +1504,8 @@ setInterval(() => {
       for (const item of clients.values()) checkDeath(item);
     }
   }
+  // цель акта могла закрыться не объявлением, а предметом или ответом НПС
+  checkAct1Done();
 }, 3000);
 
 if (!existsSync(join(DIST, 'index.html'))) {

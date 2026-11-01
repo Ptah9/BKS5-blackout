@@ -589,7 +589,7 @@ async function main(): Promise<void> {
   const inventory = new Inventory();
   const hud = new Hud(inventory);
   // панель администратора: оверлей, живёт отдельно от HUD; ручки идут в net
-  const admin = new AdminPanel((kind, value, flag) => net.adminSet(kind, value, flag));
+  const admin = new AdminPanel((kind, value, flag, code, npc, text) => net.adminSet(kind, value, flag, code, npc, text));
   const pulse = new Pulse();
   // звук: блипы в духе Undertale, по одному на символ реплики
   const voices = new Voices();
@@ -754,15 +754,9 @@ async function main(): Promise<void> {
     hud.setAnnounceGoal(false, worldPanic, lastTrust);
   }
 
-  /** Акт 1 закрыт: флаги, бумажка/запись/объявление и цель мини-игры. */
+  /** Акт 1 закрыт: один флаг, который ставит сервер, когда цель мини-игры взята. */
   function actOneReady(): boolean {
-    return (
-      worldFlags.has('cab_papered')
-      && worldFlags.has('announcer_off')
-      && worldFlags.has('crowd_calmed')
-      && worldPanic <= 30
-      && lastTrust >= 80
-    );
+    return worldFlags.has('act1_done');
   }
 
   hud.say('Темно. В кармане бутылка воды и телефон — экран светит синим.');
@@ -1099,7 +1093,13 @@ async function main(): Promise<void> {
     if (pair) net.combine(pair[0], pair[1]);
   };
 
+  // «Начать заново» на экране смерти: сервер оживит и откатит толпу
+  hud.onRestart = () => net.restart();
+
   addEventListener('keydown', (event) => {
+    // пока висит экран смерти, игровые клавиши не работают
+    if (dead) return;
+
     if (event.code === 'Escape' && cutscene.playing) {
       cutscene.skip();
       return;
@@ -1216,7 +1216,7 @@ async function main(): Promise<void> {
         // иначе после сцены камеру дёрнет
         cutscene.update(dt);
         input.consumeLook();
-      } else if (gameStarted && !chatOpen && !bagOpen && !adminOpen) {
+      } else if (gameStarted && !chatOpen && !bagOpen && !adminOpen && !dead) {
         player.update(dt, input, walkColliders(), bounds);
 
       // выбранный предмет в руке; setItem идемпотентен
@@ -1355,6 +1355,13 @@ async function main(): Promise<void> {
 
       emergency.intensity = 2.0 + Math.sin(elapsed * 2.3) * 0.5;
       smoothLights(frameDt);
+
+      // шёпот волнами на высокой панике: затухает и возвращается, а не ровный фон
+      if (worldPanic >= 60) {
+        const wave = 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(elapsed * 1.1));
+        const base = 0.05 + 0.35 * Math.min(1, worldPanic / 100);
+        soundscape.setChannelScale('whisper', (base / 0.22) * wave, 0.4);
+      }
 
       // дверь кабины отходит в сторону, когда её открыли
       if (cabOpen && cabDoorHinge && cabDoorHinge.rotation.y > -1.9) {

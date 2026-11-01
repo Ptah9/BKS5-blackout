@@ -368,7 +368,7 @@ body {
   background: rgb(8 11 16 / 0.72);
   border: 1px solid rgb(120 140 170 / 0.18);
   pointer-events: none;
-  min-width: 156px;
+  min-width: 172px;
 }
 
 #vitals .v-row {

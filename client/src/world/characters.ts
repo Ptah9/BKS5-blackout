@@ -25,6 +25,8 @@ const FILES = {
   mashinist: 'mashinist.glb',
   dima: 'dima_red_t-shirt.glb',
   sidit: 'npc_sidit.glb',
+  /** Связист: чёрная футболка, золотые кроссовки. */
+  svyazi_def: 'svyazi_def.glb',
   /** Модель игроков: у живых игроков своей нет, все ходят в одной. */
   stand: 'npc_stand.glb',
   velosiped: 'velosiped.glb',

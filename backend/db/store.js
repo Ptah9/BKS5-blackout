@@ -51,6 +51,13 @@ const SCHEMA = `
     text       TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
+
+  -- переопределённые персоны агентов: правка из панели живёт отдельно от content/**
+  CREATE TABLE IF NOT EXISTS npc_persona (
+    npc_id     TEXT PRIMARY KEY,
+    text       TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
 `;
 
 export class Store {
@@ -77,6 +84,13 @@ export class Store {
       loadState: this.db.prepare('SELECT x, z, yaw, inventory FROM state WHERE player_id = ?'),
       getFlag: this.db.prepare('SELECT value FROM world_flags WHERE key = ?'),
       allFlags: this.db.prepare('SELECT key, value FROM world_flags'),
+      getPersona: this.db.prepare('SELECT text FROM npc_persona WHERE npc_id = ?'),
+      allPersonas: this.db.prepare('SELECT npc_id, text, updated_at FROM npc_persona ORDER BY npc_id'),
+      setPersona: this.db.prepare(
+        `INSERT INTO npc_persona (npc_id, text, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(npc_id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at`,
+      ),
+      resetPersona: this.db.prepare('DELETE FROM npc_persona WHERE npc_id = ?'),
       setFlag: this.db.prepare(
         `INSERT INTO world_flags (key, value) VALUES (?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -148,6 +162,37 @@ export class Store {
   /** Все флаги мира: позднему игроку нужны не только заранее перечисленные. */
   allFlags() {
     return this.q.allFlags.all();
+  }
+
+  /**
+   * Все переопределённые персоны разом: [{ id, text, updatedAt }].
+   * Панель F3 отдаёт их списком, а не по одному запросу на агента.
+   */
+  getPersonas() {
+    return this.q.allPersonas.all().map((row) => ({
+      id: row.npc_id,
+      text: row.text,
+      updatedAt: Number(row.updated_at),
+    }));
+  }
+
+  /** Переопределённая персона агента: null — берём из content/npcs.json. */
+  getPersona(npcId) {
+    return this.q.getPersona.get(String(npcId))?.text ?? null;
+  }
+
+  setPersona(npcId, text) {
+    this.q.setPersona.run(String(npcId), String(text), Date.now());
+  }
+
+  /** Сброс на персону из файла: строки в базе больше нет. */
+  resetPersona(npcId) {
+    this.q.resetPersona.run(String(npcId));
+  }
+
+  /** Старое имя resetPersona: обработчик админки в index.js зовёт его. */
+  clearPersona(npcId) {
+    this.resetPersona(npcId);
   }
 
   setFlag(key, value) {
