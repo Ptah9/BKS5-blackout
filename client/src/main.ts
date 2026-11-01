@@ -68,6 +68,7 @@ async function main(): Promise<void> {
   const canvas = document.getElementById('view') as HTMLCanvasElement;
   const elConn = document.getElementById('s-conn') as HTMLElement;
   const elPing = document.getElementById('s-ping') as HTMLElement;
+  const elStatus = document.getElementById('status') as HTMLElement;
   const elFps = document.getElementById('s-fps') as HTMLElement;
   const elName = document.getElementById('s-name') as HTMLElement;  const elChunks = document.getElementById('s-chunks') as HTMLElement;
   const elMem = document.getElementById('s-mem') as HTMLElement;
@@ -1159,6 +1160,13 @@ async function main(): Promise<void> {
 
     if (event.code === 'Escape' && chatOpen) {
       closeChat();
+      return;
+    }
+
+    // F2 — плашка с чанками и памятью: сколько мира загружено и сколько это МБ
+    if (event.code === 'F2') {
+      event.preventDefault();
+      elStatus.classList.toggle('hidden');
       return;
     }
 
