@@ -359,26 +359,49 @@ export function buildCab(textures: Textures): Location {
   chromeTube.cyl(seatX - 0.23, 0.47, -11.58, seatX - 0.23, 1.05, -11.48, 0.011);
   chromeTube.cyl(seatX + 0.23, 0.47, -11.58, seatX + 0.23, 1.05, -11.48, 0.011);
 
-  /* ── красный стул ──────────────────────────────────────────────────── */
+  /* ── красные стулья ─────────────────────────────────────────────────── */
 
+  // Обычные кухонные табуреты, принесённые из дома. Второй собран, но
+  // спрятан: по сценарию он «появляется», когда в кабину заходят третьим.
   const stoolX = 0.72;
   const stoolZ = -11.05;
-  // сиденье и ножки с раскосом: обычный кухонный табурет, принесённый из дома
-  const stoolTop = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.04, 12), red);
-  stoolTop.position.set(stoolX, 0.45, stoolZ);
-  stoolTop.name = 'cab-stool';
+
+  const makeSeat = (x: number, z: number, name: string): THREE.Mesh => {
+    const top = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.04, 12), red);
+    top.position.set(x, 0.45, z);
+    top.name = name;
+    return top;
+  };
+
+  const stoolLegs = (x: number, z: number, legs: TubeBatch): void => {
+    for (const [sx, sz] of [
+      [-1, -1],
+      [1, -1],
+      [-1, 1],
+      [1, 1],
+    ] as const) {
+      legs.cyl(x + sx * 0.1, 0.43, z + sz * 0.1, x + sx * 0.17, 0, z + sz * 0.17, 0.014);
+    }
+    // нижний раскос: без него табурет кажется парящим
+    legs.cyl(x - 0.13, 0.16, z - 0.13, x + 0.13, 0.16, z + 0.13, 0.01);
+    legs.cyl(x - 0.13, 0.16, z + 0.13, x + 0.13, 0.16, z - 0.13, 0.01);
+  };
+
+  const stoolTop = makeSeat(stoolX, stoolZ, 'cab-stool');
   group.add(stoolTop);
-  for (const [sx, sz] of [
-    [-1, -1],
-    [1, -1],
-    [-1, 1],
-    [1, 1],
-  ] as const) {
-    redTube.cyl(stoolX + sx * 0.1, 0.43, stoolZ + sz * 0.1, stoolX + sx * 0.17, 0, stoolZ + sz * 0.17, 0.014);
-  }
-  // нижний раскос: без него табурет кажется парящим
-  redTube.cyl(stoolX - 0.13, 0.16, stoolZ - 0.13, stoolX + 0.13, 0.16, stoolZ + 0.13, 0.01);
-  redTube.cyl(stoolX - 0.13, 0.16, stoolZ + 0.13, stoolX + 0.13, 0.16, stoolZ - 0.13, 0.01);
+  stoolLegs(stoolX, stoolZ, redTube);
+
+  const secondStool = new THREE.Group();
+  secondStool.name = 'cab-stool-2';
+  secondStool.visible = false;
+  const secondX = -0.72;
+  const secondZ = -11.2;
+  secondStool.add(makeSeat(secondX, secondZ, 'cab-stool-2-seat'));
+  const secondLegs = new TubeBatch(red);
+  stoolLegs(secondX, secondZ, secondLegs);
+  const secondLegMesh = secondLegs.build('cab-stool-2-legs');
+  if (secondLegMesh) secondStool.add(secondLegMesh);
+  group.add(secondStool);
 
   /* ── шкаф, аптечка, мелочи на стенах ───────────────────────────────── */
 
@@ -461,6 +484,7 @@ export function buildCab(textures: Textures): Location {
 
   group.userData.lightSpots = lightSpots;
   group.userData.interactive = { microphone: micHead, tangent: handset, tube };
+  group.userData.stools = [stoolTop, secondStool];
   group.userData.door = {
     back: backDoor,
     side: sideDoor,
