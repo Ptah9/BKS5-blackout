@@ -21,6 +21,7 @@ import { Characters, type CharacterId, type SceneryItem } from './world/characte
 import { Passengers, type PassengerSpot } from './world/passengers';
 import { CAR_HALF_LENGTH, CAR_HALF_WIDTH, CAR_HEIGHT } from './world/car';
 import { buildCab } from './world/cab';
+import { createPropMesh } from './world/propMeshes';
 import type { Box2 } from './world/collision';
 
 /**
@@ -190,8 +191,25 @@ async function main(): Promise<void> {
   /** true — свет уже от бутылки с телефоном: холодный и тусклее, чем городской. */
   let lampMode = false;
 
+  /** Первое значение света после входа ставим сразу: иначе вагон вспыхивает
+   *  и гаснет рывком, пока идёт плавный переход. */
+  let lightsInitialized = false;
+
   function setLights(value: number): void {
     lightsTarget = Math.max(0, Math.min(1, value));
+    // отладка: видно, кто и когда двигал свет
+    (window as unknown as { __lightsLog?: Array<[number, number]> }).__lightsLog ??= [];
+    (window as unknown as { __lightsLog: Array<[number, number]> }).__lightsLog.push([
+      Math.round(performance.now()),
+      lightsTarget,
+    ]);
+
+    if (!lightsInitialized) {
+      lightsInitialized = true;
+      lightsValue = lightsTarget;
+      lastAppliedLights = -1;
+      updateLights();
+    }
   }
 
   /** Плавный переход: вагон не щёлкает, а разгорается. */
@@ -248,14 +266,6 @@ async function main(): Promise<void> {
         light.intensity = lightsValue * 5.4;
       }
     }
-
-    // лампа в кабине живёт по тем же правилам, что плафоны вагона
-    cab.group.traverse((node) => {
-      if (node.name !== 'lamp') return;
-      const mesh = node as THREE.Mesh;
-      const material = mesh.material as THREE.MeshStandardMaterial;
-      material.emissive.setRGB(0.87, 0.91, 1).multiplyScalar(lightsValue * 0.9);
-    });
   }
 
   function setObjective(text: string): void {
@@ -375,7 +385,7 @@ async function main(): Promise<void> {
     minX: -CAR_HALF_WIDTH,
     maxX: CAR_HALF_WIDTH,
     // впереди за дверью кабина: она глубже вагона на 2.4 м
-    minZ: -CAR_HALF_LENGTH - 2.4,
+    minZ: -CAR_HALF_LENGTH - 3.4,
     maxZ: CAR_HALF_LENGTH,
   };
 
@@ -424,12 +434,35 @@ async function main(): Promise<void> {
   let worldProps: PropView[] = [];
   let nearProp: PropView | null = null;
   let nearPropVerb: PropVerb | null = null;
+  /** Что уже унесли из мира: такие предметы не показываем и не предлагаем. */
+  const takenProps = new Set<string>();
+  /** Какие флаги мира уже стоят: по ним прячем отработавшие действия. */
+  const worldFlags = new Set<string>();
+  const propMeshes = new Map<string, THREE.Object3D>();
+
+  const dropProp = (id: string): void => {
+    takenProps.add(id);
+    const mesh = propMeshes.get(id);
+    if (mesh) {
+      scene.remove(mesh);
+      propMeshes.delete(id);
+    }
+  };
 
   // предметы мира (двери, кнопки, люки) приезжают из content/props.json
   void fetch('/api/content/props.json')
     .then((response) => (response.ok ? response.json() : null))
     .then((data: { props?: PropView[] } | null) => {
       worldProps = data?.props ?? [];
+
+      // что можно взять — то и видно: у каждой вещи своя фигурка
+      for (const prop of worldProps) {
+        const mesh = createPropMesh(prop.id);
+        if (!mesh) continue;
+        mesh.position.set(prop.pos[0], prop.pos[1], prop.pos[2]);
+        scene.add(mesh);
+        propMeshes.set(prop.id, mesh);
+      }
     })
     .catch(() => {
       // без предметов играть можно, просто нечего нажимать
@@ -601,6 +634,11 @@ async function main(): Promise<void> {
       }
     },
     onEvent: (kind, data) => {
+      // отладка: журнал событий сценария с временем — без него не понять,
+      // кто именно гасит свет
+      const log = ((window as unknown as { __eventLog?: Array<[number, string, unknown]> }).__eventLog ??= []);
+      if (log.length < 200) log.push([Math.round(performance.now()), kind, data]);
+
       switch (kind) {
         case 'notes':
           hud.setNotes((data.list as Array<{ id: string; text: string }>) ?? []);
@@ -624,7 +662,24 @@ async function main(): Promise<void> {
         case 'flag':
           // дверь кабины открыли — проход свободен, створка отходит
           if (data.flag === 'cab_open') cabOpen = true;
+          if (typeof data.flag === 'string') {
+            if (data.value) worldFlags.add(data.flag);
+            else worldFlags.delete(data.flag);
+          }
           return;
+        case 'prop_taken': {
+          const id = String(data.id ?? '');
+          if (id) dropProp(id);
+          return;
+        }
+        case 'world_state': {
+          const taken = (data.taken as string[]) ?? [];
+          const flags = (data.flags as string[]) ?? [];
+          for (const id of taken) dropProp(id);
+          for (const flag of flags) worldFlags.add(flag);
+          if (worldFlags.has('cab_open')) cabOpen = true;
+          return;
+        }
         case 'say':
           hud.say(String(data.text ?? ''), 6);
           return;
@@ -870,6 +925,7 @@ async function main(): Promise<void> {
       const forwardZ = -Math.cos(player.facing);
 
       for (const prop of worldProps) {
+        if (takenProps.has(prop.id)) continue;
         const dx = prop.pos[0] - player.position.x;
         const dz = prop.pos[2] - player.position.z;
         const distance = Math.hypot(dx, dz);
@@ -887,7 +943,9 @@ async function main(): Promise<void> {
       }
 
       if (closestProp) {
-        closestVerb = closestProp.verbs.find((verb) => verb.id !== 'look') ?? closestProp.verbs[0];
+        // отработавшие действия не предлагаем: дверь уже открыта, свет уже есть
+        const available = closestProp.verbs.filter((verb) => !verb.flag || !worldFlags.has(verb.flag));
+        closestVerb = available.find((verb) => verb.id !== 'look') ?? available[0] ?? null;
       }
 
       nearProp = closestProp;

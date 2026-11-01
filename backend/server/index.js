@@ -661,6 +661,21 @@ function attachWebSocket(server) {
             data: { list: [...notes].map(([id, text]) => ({ id, text })) },
           }));
 
+          // что уже взяли и какие флаги стоят: чтобы опоздавший не видел
+          // унесённые предметы и не жал на открытую дверь
+          ws.send(JSON.stringify({
+            t: MSG.EVENT,
+            kind: 'world_state',
+            data: {
+              taken: props
+                .filter((prop) => store.getFlag(`taken_${prop.id}`) === '1')
+                .map((prop) => prop.id),
+              flags: ['cab_open', 'window_open', 'has_light', 'cab_papered', 'announcer_off', 'window_flag'].filter(
+                (flag) => store.getFlag(flag) === '1',
+              ),
+            },
+          }));
+
           // свет уже собрали — поздний игрок должен увидеть лампу на месте
           if (store.getFlag('has_light') === '1' && store.getFlag('lamp_x') !== null) {
             scenario.state.lights = LAMP_LIGHT;
@@ -780,6 +795,16 @@ function attachWebSocket(server) {
             return;
           }
 
+          // действие уже выполнено: дверь открыта, форточка открыта — второй раз незачем
+          if (verb.flag && store.getFlag(verb.flag) === (verb.value ? '1' : '0')) {
+            ws.send(JSON.stringify({
+              t: MSG.EVENT,
+              kind: 'prop',
+              data: { id: prop.id, verb: verb.id, text: verb.doneText ?? 'Уже сделано.' },
+            }));
+            return;
+          }
+
           if (verb.flag) {
             store.setFlag(verb.flag, verb.value ? '1' : '0');
             // мысль, которая опиралась на этот флаг, устарела — снимаем до новых
@@ -816,6 +841,8 @@ function attachWebSocket(server) {
             store.setFlag(takenKey, '1');
             store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
             sendInventory(ws, client.inventory, verb.text ?? '');
+            // вещь унесли: у остальных она тоже исчезает
+            broadcast({ kind: 'prop_taken', data: { id: prop.id } });
           }
 
           // открытая дверь кабины пугает: там никого нет, и это заметно

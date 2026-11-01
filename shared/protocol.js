@@ -64,7 +64,7 @@ export const SEE_RADIUS = 40;
 export const WORLD = Object.freeze({
   minX: -1.35,
   maxX: 1.35,
-  minZ: -10,
+  minZ: -13.4,
   maxZ: 10,
   spawnX: 0,
   spawnZ: 8.4,

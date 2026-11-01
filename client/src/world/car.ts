@@ -159,9 +159,9 @@ export function buildCar(
     if (zEnd === -1) {
       // впереди не стена, а проём в кабину: две части стены и перемычка сверху.
       // Сама дверь — отдельный объект, её открывает сценарий.
-      push('panel', -0.95, CAR_HEIGHT / 2, z, 1.0, CAR_HEIGHT, 0.08);
-      push('panel', 0.95, CAR_HEIGHT / 2, z, 1.0, CAR_HEIGHT, 0.08);
-      push('panel', 0, CAR_HEIGHT - 0.2, z, 0.9, 0.4, 0.08);
+      push('panel', -0.95, CAR_HEIGHT / 2, z, 0.8, CAR_HEIGHT, 0.08);
+      push('panel', 0.95, CAR_HEIGHT / 2, z, 0.8, CAR_HEIGHT, 0.08);
+      push('panel', 0, CAR_HEIGHT - 0.2, z, 1.1, 0.4, 0.08);
       continue;
     }
 
