@@ -4,12 +4,11 @@
 
 ```bash
 node backend/server/index.js         # https://<ip>:8443, если выпущен сертификат
-node backend/server/index.js --dev   # http://127.0.0.1:8080 для работы с Vite
+node backend/server/index.js --dev   # http://127.0.0.1:8090 для работы с Vite
 ```
 
-Что уже есть (M0): статика, `/ws`, рукопожатие `hello → welcome`, `ping → pong`.
+Сервер уже поддерживает локальные модели Ollama и OpenAI-совместимые API,
+а также DeepSeek и встроенные правила как резервные режимы. Подключение Ollama
+описано в [`../llm/README.md`](../llm/README.md).
 
-Что приедет дальше: авторизация и токены (M2), снапшоты и дельты состояния (M2),
-таймлайн сценария и флаги мира (M5), прокси к локальной модели (M5).
-
-Протокол сообщений — `shared/protocol.js`, описание — `Flaude/ПРОТОКОЛ.md`.
+Протокол сообщений — `shared/protocol.js`.
