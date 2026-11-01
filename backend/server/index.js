@@ -784,6 +784,8 @@ function attachWebSocket(server) {
             store.setFlag(verb.flag, verb.value ? '1' : '0');
             // мысль, которая опиралась на этот флаг, устарела — снимаем до новых
             dropNotesByFlag(verb.flag);
+            // клиенты должны узнать о флаге: от него зависит, открыта ли дверь
+            broadcast({ kind: 'flag', data: { flag: verb.flag, value: Boolean(verb.value) } });
             // сценарий должен узнать о флаге, иначе триггеры на него не сработают
             scenario.fire('flag', { flag: verb.flag });
 

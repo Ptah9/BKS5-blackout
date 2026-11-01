@@ -155,6 +155,16 @@ export function buildCar(
   // торцевые стены с дверью и двумя окнами
   for (const zEnd of [-1, 1] as const) {
     const z = zEnd * (CAR_HALF_LENGTH + 0.04);
+
+    if (zEnd === -1) {
+      // впереди не стена, а проём в кабину: две части стены и перемычка сверху.
+      // Сама дверь — отдельный объект, её открывает сценарий.
+      push('panel', -0.95, CAR_HEIGHT / 2, z, 1.0, CAR_HEIGHT, 0.08);
+      push('panel', 0.95, CAR_HEIGHT / 2, z, 1.0, CAR_HEIGHT, 0.08);
+      push('panel', 0, CAR_HEIGHT - 0.2, z, 0.9, 0.4, 0.08);
+      continue;
+    }
+
     push('panel', 0, CAR_HEIGHT / 2, z, 2.7, CAR_HEIGHT, 0.08);
     // дверь в следующий вагон: сдвинута от стены на 12 см, иначе грани совпадают
     // и получается z-fighting (шахматка на двери)
@@ -165,6 +175,7 @@ export function buildCar(
       push('glass', x, 1.55, z - zEnd * 0.06, 0.55, 0.7, 0.02);
     }
   }
+
 
   // ── борта ─────────────────────────────────────────────────────────────
   for (const side of [-1, 1] as const) {

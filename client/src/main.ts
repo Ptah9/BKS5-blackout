@@ -19,6 +19,8 @@ import { ChunkManager } from './world/chunks';
 import { Characters, type CharacterId, type SceneryItem } from './world/characters';
 import { Passengers, type PassengerSpot } from './world/passengers';
 import { CAR_HALF_LENGTH, CAR_HALF_WIDTH, CAR_HEIGHT } from './world/car';
+import { buildCab } from './world/cab';
+import type { Box2 } from './world/collision';
 
 /**
  * M2: вход по логину с паролем, состояние в базе, другие игроки в вагоне.
@@ -102,6 +104,19 @@ async function main(): Promise<void> {
   const textures = createTextures();
   const chunks = new ChunkManager(textures);
   scene.add(chunks.group);
+
+  // кабина машиниста: своя комната за передней дверью
+  const cab = buildCab(textures);
+  scene.add(cab.group);
+  /** Дверь в кабину открыта — проход свободен. */
+  let cabOpen = false;
+
+  /** Коллайдеры текущего кадра: вагон, кабина и (пока закрыта) дверь. */
+  const walkColliders = (): Box2[] => [
+    ...chunks.colliders,
+    ...cab.colliders,
+    ...(cabOpen ? [] : [cab.blocker]),
+  ];
 
   // Модели персонажей: пассажиры и агенты берут их отсюда.
   const characters = new Characters();
@@ -231,6 +246,14 @@ async function main(): Promise<void> {
         light.intensity = lightsValue * 5.4;
       }
     }
+
+    // лампа в кабине живёт по тем же правилам, что плафоны вагона
+    cab.group.traverse((node) => {
+      if (node.name !== 'lamp') return;
+      const mesh = node as THREE.Mesh;
+      const material = mesh.material as THREE.MeshStandardMaterial;
+      material.emissive.setRGB(0.87, 0.91, 1).multiplyScalar(lightsValue * 0.9);
+    });
   }
 
   function setObjective(text: string): void {
@@ -345,7 +368,8 @@ async function main(): Promise<void> {
   const bounds = {
     minX: -CAR_HALF_WIDTH,
     maxX: CAR_HALF_WIDTH,
-    minZ: -CAR_HALF_LENGTH,
+    // впереди за дверью кабина: она глубже вагона на 2.4 м
+    minZ: -CAR_HALF_LENGTH - 2.4,
     maxZ: CAR_HALF_LENGTH,
   };
 
@@ -543,6 +567,10 @@ async function main(): Promise<void> {
             lastAppliedLights = -1; // заставим пересчитать свет и цвет плафонов
           }
           return;
+        case 'flag':
+          // дверь кабины открыли — проход свободен, створка отходит
+          if (data.flag === 'cab_open') cabOpen = true;
+          return;
         case 'say':
           hud.say(String(data.text ?? ''), 6);
           return;
@@ -729,7 +757,7 @@ async function main(): Promise<void> {
         cutscene.update(dt);
         input.consumeLook();
       } else if (gameStarted && !chatOpen && !bagOpen) {
-        player.update(dt, input, chunks.colliders, bounds);
+        player.update(dt, input, walkColliders(), bounds);
       }
       chunks.update(player.position.z);
 
@@ -810,6 +838,11 @@ async function main(): Promise<void> {
 
       emergency.intensity = 2.0 + Math.sin(elapsed * 2.3) * 0.5;
       smoothLights(frameDt);
+
+      // дверь кабины отходит в сторону, когда её открыли
+      if (cabOpen && cab.doorHinge.rotation.y > -1.9) {
+        cab.doorHinge.rotation.y = Math.max(-1.9, cab.doorHinge.rotation.y - frameDt * 2.2);
+      }
 
       remotePlayers.update([...replica.step(frameDt, now), ...npcEntities]);
 
