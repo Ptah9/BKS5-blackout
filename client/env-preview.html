@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Окружение — предпросмотр</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #05070a;
+        font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+        color: #cfd7de;
+      }
+
+      #view {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        image-rendering: pixelated;
+      }
+
+      #hud {
+        position: fixed;
+        left: 12px;
+        top: 12px;
+        padding: 10px 12px;
+        background: rgba(6, 9, 13, 0.72);
+        border: 1px solid rgba(120, 140, 160, 0.25);
+        border-radius: 4px;
+        font-size: 12px;
+        line-height: 1.55;
+        pointer-events: none;
+        white-space: pre;
+      }
+
+      #hud b {
+        color: #e9e2cf;
+        font-weight: 600;
+      }
+
+      #hud .dim {
+        color: #7b8794;
+      }
+
+      #center {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        pointer-events: none;
+      }
+
+      #center span {
+        font-size: 12px;
+        color: #8b98a5;
+        background: rgba(6, 9, 13, 0.6);
+        padding: 6px 10px;
+        border-radius: 3px;
+        opacity: 0;
+        transition: opacity 0.2s;
+      }
+
+      #center span.show {
+        opacity: 1;
+      }
+
+      #cross {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        width: 5px;
+        height: 5px;
+        margin: -2px 0 0 -2px;
+        border-radius: 50%;
+        background: rgba(220, 230, 240, 0.5);
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="hud"></div>
+    <div id="center"><span id="center-text"></span></div>
+    <div id="cross"></div>
+    <script type="module" src="/src/env-preview.ts"></script>
+  </body>
+</html>

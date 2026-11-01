@@ -23,13 +23,15 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-function makeTexture(
+export function makeTexture(
   seed: number,
   draw: (ctx: CanvasRenderingContext2D, rnd: () => number) => void,
+  width = SIZE,
+  height = SIZE,
 ): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
-  canvas.width = SIZE;
-  canvas.height = SIZE;
+  canvas.width = width;
+  canvas.height = height;
 
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('не удалось получить 2d-контекст для текстуры');
