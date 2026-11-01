@@ -68,6 +68,7 @@ async function main(): Promise<void> {
   const elLobby = document.getElementById('lobby') as HTMLElement;
   const elLobbyPlayers = document.getElementById('lobby-players') as HTMLElement;
   const elLobbyStart = document.getElementById('lobby-start') as HTMLButtonElement;
+  const elBagBtn = document.getElementById('bag-btn') as HTMLButtonElement;
 
   /** Игра начинается по кнопке, чтобы у всех был один старт. */
   let gameStarted = false;
@@ -627,6 +628,25 @@ async function main(): Promise<void> {
 
   /* ───────────────────────────── кадр ───────────────────────────── */
 
+  /** Рюкзак: пока открыт, мышь принадлежит панели, а не камере. */
+  let bagOpen = false;
+
+  function setBag(open: boolean): void {
+    bagOpen = open;
+    hud.setBagOpen(open);
+    if (open) document.exitPointerLock();
+  }
+
+  elBagBtn.addEventListener('click', () => setBag(!bagOpen));
+
+  hud.onSlot = (index) => {
+    inventory.toggle(index);
+    hud.renderSlots();
+    const pair = inventory.pair;
+    // два предмета выбраны — сразу соединяем, как по клавише C
+    if (pair) net.combine(pair[0], pair[1]);
+  };
+
   addEventListener('keydown', (event) => {
     if (event.code === 'Escape' && cutscene.playing) {
       cutscene.skip();
@@ -638,7 +658,18 @@ async function main(): Promise<void> {
       return;
     }
 
-    if (event.code === 'KeyT' && !chatOpen) {
+    if (event.code === 'KeyI' && !chatOpen) {
+      event.preventDefault();
+      setBag(!bagOpen);
+      return;
+    }
+
+    if (event.code === 'Escape' && bagOpen) {
+      setBag(false);
+      return;
+    }
+
+    if (event.code === 'KeyT' && !chatOpen && !bagOpen) {
       if (nearNpc) {
         // без этого нажатая буква (t или «е» в русской раскладке) попадает в поле
         event.preventDefault();
@@ -647,13 +678,13 @@ async function main(): Promise<void> {
       return;
     }
 
-    if (event.code === 'KeyE' && !chatOpen && !cutscene.playing) {
+    if (event.code === 'KeyE' && !chatOpen && !bagOpen && !cutscene.playing) {
       if (nearProp && nearPropVerb) net.interact(nearProp.id, nearPropVerb.id);
       return;
     }
 
-    // пока игрок печатает, игровые клавиши не работают
-    if (chatOpen) return;
+    // пока игрок печатает или роется в рюкзаке, игровые клавиши не работают
+    if (chatOpen || bagOpen) return;
 
     if (event.code === 'F3') {
       elStatus.classList.toggle('hidden');
@@ -705,7 +736,7 @@ async function main(): Promise<void> {
         // иначе после сцены камеру дёрнет
         cutscene.update(dt);
         input.consumeLook();
-      } else if (gameStarted && !chatOpen) {
+      } else if (gameStarted && !chatOpen && !bagOpen) {
         player.update(dt, input, chunks.colliders, bounds);
       }
       chunks.update(player.position.z);

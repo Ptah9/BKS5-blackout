@@ -555,6 +555,131 @@ body {
   color: rgb(150 165 185 / 0.7);
 }
 
+/* ── рюкзак ──────────────────────────────────────────────── */
+
+#bag-btn {
+  position: fixed;
+  left: calc(50% + 208px);
+  bottom: 24px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid rgb(120 140 170 / 0.3);
+  background: rgb(8 11 16 / 0.78);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#bag-btn b {
+  color: #9ecbff;
+}
+
+#bag-btn:hover {
+  border-color: #4d88c7;
+}
+
+#bag {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(460px, 92vw);
+  padding: 18px 20px 14px;
+  border-radius: 10px;
+  background: rgb(8 11 16 / 0.94);
+  border: 1px solid rgb(120 140 170 / 0.28);
+  box-shadow: 0 24px 60px rgb(0 0 0 / 0.6);
+  z-index: 7;
+}
+
+#bag.hidden {
+  display: none;
+}
+
+.bag-head {
+  color: var(--dim);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+#bag-slots {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.bag-slot {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  padding: 10px 8px 8px;
+  min-height: 96px;
+  border-radius: 8px;
+  border: 1px solid rgb(120 140 170 / 0.22);
+  background: rgb(14 19 26 / 0.9);
+  color: var(--dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.bag-slot img {
+  width: 52px;
+  height: 52px;
+  image-rendering: pixelated;
+  opacity: 0.5;
+}
+
+.bag-slot.filled {
+  border-color: rgb(150 175 210 / 0.45);
+}
+
+.bag-slot.filled img {
+  opacity: 1;
+}
+
+.bag-slot.selected {
+  border-color: #4d88c7;
+  box-shadow: inset 0 0 0 1px #4d88c7;
+  background: rgb(22 34 48 / 0.95);
+}
+
+.bag-slot::before {
+  content: attr(data-key);
+  position: absolute;
+  left: 6px;
+  top: 4px;
+  font-size: 10px;
+  color: rgb(150 165 185 / 0.7);
+}
+
+.bag-caption {
+  font-size: 11px;
+  text-align: center;
+  line-height: 1.2;
+}
+
+#bag-hint {
+  margin: 12px 0 0;
+  min-height: 16px;
+  font-size: 12px;
+  color: #b9c6d6;
+}
+
+.bag-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.bag-note b {
+  color: #9ecbff;
+}
+
+
 /* ── экран входа ─────────────────────────────────────────── */
 
 #login {
