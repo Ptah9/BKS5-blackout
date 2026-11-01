@@ -243,6 +243,10 @@ async function main(): Promise<void> {
   let lampMode = false;
   /** Гул тоннеля: включается на входе за кабину и гаснет при возврате. */
   let tunnelHumOn = false;
+  /** Песня у Альтушки: включается один раз, когда интро позади. */
+  let dinastyOn = false;
+  /** Где сейчас её источник: тянем из живой позиции NPC, а не из константы. */
+  let dinastyAt: [number, number] = [0.6, 0.9];
 
   /** Первое значение света после входа ставим сразу: иначе вагон вспыхивает
    *  и гаснет рывком, пока идёт плавный переход. */
@@ -1062,6 +1066,30 @@ async function main(): Promise<void> {
         tunnelHumOn = false;
         soundscape.setChannelVolume('tunnelWind', 0.11, 2);
       }
+
+      // песня у Альтушки: по кругу, тихо, громче рядом с ней и тише к краям вагона;
+      // источник — её текущая позиция, поэтому если её сдвинут, звук поедет следом
+      const altIndex = npcIds.indexOf('altushka');
+      const alt = altIndex >= 0 ? npcEntities[altIndex] : null;
+      const altAt: [number, number] = alt ? [alt.x, alt.z] : dinastyAt;
+      if (!dinastyOn && !cutscene.playing && performance.now() > 15000) {
+        dinastyOn = true;
+        dinastyAt = altAt;
+        soundscape.play('dinasty', {
+          volume: 0.08,
+          fade: 4,
+          loop: true,
+          persist: true,
+          at: altAt,
+          near: 2,
+          far: 8,
+          nearVolume: 0.3,
+        });
+      } else if (dinastyOn && Math.hypot(altAt[0] - dinastyAt[0], altAt[1] - dinastyAt[1]) > 0.25) {
+        dinastyAt = altAt;
+        soundscape.play('dinasty', { at: altAt });
+      }
+      soundscape.setListener(player.position.x, player.position.z);
 
       chunks.update(player.position.z);
 

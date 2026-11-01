@@ -58,7 +58,7 @@
       "do": "radio",
       "text": "Внимание. Оставайтесь в вагонах.",
       "repeats": 4,
-      "interval": 4
+      "interval": 5.4
     },
     {
       "on": "flag",

@@ -20,6 +20,8 @@ interface SoundDef {
   /** Базовая громкость 0..1. */
   volume: number;
   loop?: boolean;
+  /** Тяжёлый файл: не тянем в предзагрузку, грузим при первом play. */
+  lazy?: boolean;
 }
 
 /** Реестр дорожек: имя в сценарии → файл. */
@@ -38,6 +40,8 @@ const DEFS = {
   intercom: { file: 'intercom-stay-in-car.mp3', volume: 0.9 },
   /** Гул тоннеля после интро. 30 с, петля. */
   tunnelWind: { file: 'tunnel-rumble.mp3', volume: 0.3, loop: true },
+  /** Песня у Альтушки: 6 МБ, поэтому грузится не при старте, а при включении. */
+  dinasty: { file: 'dinasty.mp3', volume: 0.08, loop: true, lazy: true },
 } as const satisfies Record<string, SoundDef>;
 
 const SOUNDS: Record<keyof typeof DEFS, SoundDef> = DEFS;
@@ -53,6 +57,12 @@ export interface PlayOptions {
   loop?: boolean;
   /** Пережить конец катсцены (гул тоннеля, шёпот). */
   persist?: boolean;
+  /** Источник в мире [x, z]: громкость сама зависит от расстояния до слушателя. */
+  at?: [number, number];
+  /** Радиусы близко/далеко и громкость вблизи, метры и 0..1. */
+  near?: number;
+  far?: number;
+  nearVolume?: number;
 }
 
 interface Sound {
@@ -71,7 +81,17 @@ interface Sound {
   dead: boolean;
   /** Ждём разрешения на воспроизведение после клика. */
   waitingGesture: boolean;
+  /** Источник в мире и радиусы: если заданы, громкость идёт от расстояния. */
+  at: { x: number; z: number } | null;
+  near: number;
+  far: number;
+  nearVolume: number;
 }
+
+/** Всё, кроме тяжёлых файлов: их тянем только по первому play. */
+const PRELOAD = (Object.keys(DEFS) as Array<keyof typeof DEFS>).filter(
+  (name) => !(DEFS as Record<string, SoundDef>)[name].lazy,
+);
 
 const MUTE_KEY = 'KeyM';
 
@@ -86,6 +106,8 @@ export class Soundscape {
   private lastTick = 0;
   private ticking = false;
   private gestureHooked = false;
+  /** Где сейчас слушатель: обновляется из main.ts каждый кадр. */
+  private listener: { x: number; z: number } | null = null;
 
   constructor() {
     this.lastTick = typeof performance === 'undefined' ? 0 : performance.now();
@@ -119,8 +141,8 @@ export class Soundscape {
   }
 
   /** Создать элементы заранее: к первому событию файл уже в буфере. */
-  preload(names: readonly SoundName[] = Object.keys(SOUNDS) as SoundName[]): void {
-    for (const name of names) this.element(name);
+  preload(names?: readonly SoundName[]): void {
+    for (const name of names ?? PRELOAD) this.element(name);
   }
 
   /** Катсцена началась: всё, что она запустит, будет помечено её как «временное». */
@@ -150,6 +172,11 @@ export class Soundscape {
     sound.base = clamp01(options.volume ?? def.volume);
     sound.persist = options.persist ?? false;
     sound.audio.loop = options.loop ?? def.loop ?? false;
+    if (options.at) sound.at = { x: options.at[0], z: options.at[1] };
+    if (options.near !== undefined) sound.near = options.near;
+    if (options.far !== undefined) sound.far = options.far;
+    if (options.nearVolume !== undefined) sound.nearVolume = options.nearVolume;
+
     sound.target = sound.base * sound.scale;
     sound.rate = 1 / Math.max(0.05, options.fade ?? 0.35);
 
@@ -216,6 +243,14 @@ export class Soundscape {
     this.setChannelScale('whisper', target / whisperDef, fade);
   }
 
+  /**
+   * Где слушатель (игрок). Зовётся из кадрового цикла; для дорожек с `at`
+   * громкость считается от расстояния до источника.
+   */
+  setListener(x: number, z: number): void {
+    this.listener = { x, z };
+  }
+
   /** Есть ли уже элементы в памяти: нужно для отчёта и проверок. */
   loaded(): SoundName[] {
     return [...this.sounds.keys()];
@@ -247,6 +282,10 @@ export class Soundscape {
       scale: 1,
       dead: false,
       waitingGesture: false,
+      at: null,
+      near: 2,
+      far: 8,
+      nearVolume: 0.3,
     };
 
     audio.addEventListener('error', () => {
@@ -307,6 +346,13 @@ export class Soundscape {
     let busy = false;
     for (const sound of this.sounds.values()) {
       if (sound.dead) continue;
+
+      // дорожка с источником в мире: цель громкости — от расстояния до игрока
+      if (sound.at && this.listener && sound.audio.paused === false) {
+        const distance = Math.hypot(this.listener.x - sound.at.x, this.listener.z - sound.at.z);
+        sound.target = this.distanceVolume(sound, distance) * sound.scale;
+      }
+
       if (sound.gain !== sound.target) {
         const step = sound.rate * dt;
         sound.gain =
@@ -323,6 +369,17 @@ export class Soundscape {
     }
     this.applyVolumes();
     if (!busy) this.ticking = false;
+  }
+
+  /**
+   * Громкость от расстояния: до `near` — `nearVolume`, дальше `far` — базовая,
+   * между ними плавно (smoothstep), чтобы не было ступеньки на границе.
+   */
+  private distanceVolume(sound: Sound, distance: number): number {
+    const span = Math.max(0.001, sound.far - sound.near);
+    const k = clamp01((distance - sound.near) / span);
+    const smooth = k * k * (3 - 2 * k);
+    return sound.nearVolume + (sound.base - sound.nearVolume) * smooth;
   }
 }
 
