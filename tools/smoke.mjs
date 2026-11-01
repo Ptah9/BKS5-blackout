@@ -1,16 +1,29 @@
-/**
+/*
  * Дымовой тест M2: сервер живой, вход работает, токен проверяется,
  * мир рассылает позиции, второй игрок виден первому.
  *
  * Запуск: node tools/smoke.mjs   (сервер должен быть уже поднят)
  */
 
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { WebSocket } from 'ws';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // свой же локальный сертификат
 
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8090';
 const WS_URL = BASE.replace(/^http/, 'ws') + '/ws';
+
+// Мир должен начинаться без лампы: иначе «собери свет» не проверить.
+// Флаги живут в базе, поэтому чистим их напрямую — сервер читает их оттуда.
+try {
+  const db = new DatabaseSync(path.join(import.meta.dirname, '..', 'data', 'game.db'));
+  db.exec("DELETE FROM world_flags WHERE key IN ('has_light', 'lamp_x', 'lamp_z')");
+  db.close();
+} catch {
+  // базы может не быть — тогда тест просто пойдёт по тому состоянию, что есть
+}
+
 
 let failed = 0;
 const check = (name, ok, extra = '') => {
@@ -136,17 +149,17 @@ const list = await seen;
 check('двое в мире, позиция первого дошла', Boolean(list), list ? `${list.length} игроков` : 'нет пакета');
 
 // 9. рецепты проверяет сервер, а не клиент
-const waitInventory = (send) =>
+const waitInventory = (send, who = first) =>
   new Promise((resolve) => {
     const timer = setTimeout(() => resolve(null), 2000);
     const onMessage = (raw) => {
       const msg = JSON.parse(String(raw));
       if (msg.t !== 'inventory') return;
       clearTimeout(timer);
-      first.ws.off('message', onMessage);
+      who.ws.off('message', onMessage);
       resolve(msg);
     };
-    first.ws.on('message', onMessage);
+    who.ws.on('message', onMessage);
     send();
   });
 
@@ -157,6 +170,17 @@ check(
   combined?.text ?? 'нет ответа',
 );
 
+// лампа одна: второй игрок со своим набором получает отказ, а не вторую лампу
+const secondTry = await waitInventory(
+  () => secondClient.ws.send(JSON.stringify({ t: 'combine', i: 0, j: 1 })),
+  secondClient,
+);
+check(
+  'второй фонарик не собирается',
+  secondTry?.slots?.[0] === 'bottle' && (secondTry?.text ?? '').includes('Свет уже горит'),
+  secondTry?.text ?? 'нет ответа',
+);
+
 const rejected = await waitInventory(() => first.ws.send(JSON.stringify({ t: 'combine', i: 2, j: 3 })));
 check(
   'combine: конфеты + бумажка отклонены',
@@ -164,13 +188,16 @@ check(
   rejected?.text ?? 'нет ответа',
 );
 
+// лампа встала — предмет из рюкзака пропал; ждём, пока сервер дошлёт инвентарь
+await new Promise((r) => setTimeout(r, 2800));
+
 // 10. инвентарь переживает переподключение (значит, он в базе, а не в памяти)
 first.ws.close();
 await new Promise((r) => setTimeout(r, 300));
 const again = await connect(createdData.token);
 check(
-  'инвентарь пришёл из базы после переподключения',
-  again.snapshot?.inventory?.[0] === 'flashlight',
+  'фонарик ушёл в мир и не вернулся из базы',
+  again.snapshot?.inventory?.[0] === null && again.snapshot?.inventory?.[2] === 'candy',
   again.snapshot ? JSON.stringify(again.snapshot.inventory) : 'нет снапшота',
 );
 again.ws.close();

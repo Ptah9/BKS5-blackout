@@ -695,6 +695,12 @@ function attachWebSocket(server) {
             return;
           }
 
+          // лампа в мире одна: второй фонарик не нужен и не собирается
+          if (recipe.result === 'flashlight' && store.getFlag('has_light') === '1') {
+            sendInventory(ws, client.inventory, 'Свет уже горит: вторая лампа не нужна.');
+            return;
+          }
+
           client.inventory[i] = recipe.result;
           client.inventory[j] = null;
           log(`игрок ${client.name}: ${first} + ${second} → ${recipe.result}`);
@@ -712,7 +718,14 @@ function attachWebSocket(server) {
             ws.send(JSON.stringify({ t: MSG.EVENT, kind: 'cutscene', data: { id: 'craft_light' } }));
             const lampX = client.x - Math.sin(client.yaw) * 0.75;
             const lampZ = client.z - Math.cos(client.yaw) * 0.75;
-            setTimeout(() => placeLamp(lampX, lampZ), LAMP_DELAY_MS);
+            setTimeout(() => {
+              placeLamp(lampX, lampZ);
+
+              // предмет ушёл в мир: из рюкзака он пропадает
+              client.inventory = client.inventory.map((slot) => (slot === 'flashlight' ? null : slot));
+              store.saveState(client.playerId, client.x, client.z, client.yaw, client.inventory);
+              if (ws.readyState === ws.OPEN) sendInventory(ws, client.inventory, '');
+            }, LAMP_DELAY_MS);
 
             // свет успокаивает толпу и добавляет доверия к тому, кто его нашёл
             changeStat('panic', -8);
